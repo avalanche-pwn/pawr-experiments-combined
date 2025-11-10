@@ -1,6 +1,6 @@
 west-commands:
-  - file: scripts/example_west_command.py
+  - file: scripts/export_compile_commands.py
     commands:
-      - name: example-west-command
-        class: ExampleWestCommand
+      - name: export_compile_commands
+        class: ExportCompileCommands
         help: an example west extension command
