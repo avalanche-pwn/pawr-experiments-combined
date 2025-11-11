@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef APP_LIB_CUSTOM_H_
-#define APP_LIB_CUSTOM_H_
+#ifndef APP_LIB_INTERACTIVE_H_
+#define APP_LIB_INTERACTIVE_H_
+
+#include <zephyr/drivers/gpio.h>
 
 /**
  * @defgroup lib_custom Custom library
@@ -30,8 +32,8 @@
  * @retval val if @p val is non-zero
  * @retval CONFIG_CUSTOM_GET_VALUE_DEFAULT if @p val is zero
  */
-int custom_get_value(int val);
+int init_led(struct gpio_dt_spec led);
 
 /** @} */
 
-#endif /* APP_LIB_CUSTOM_H_ */
+#endif /* APP_LIB_INTERACTIVE_H_ */

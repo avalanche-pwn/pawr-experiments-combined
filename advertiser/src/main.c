@@ -12,7 +12,6 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
-#include <app/lib/custom.h>
 
 #define NUM_RSP_SLOTS 5
 #define NUM_SUBEVENTS 5
@@ -36,8 +35,8 @@ static struct bt_uuid_128 pawr_char_uuid = BT_UUID_INIT_128(
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef1));
 static uint16_t pawr_attr_handle;
 static const struct bt_le_per_adv_param per_adv_params = {
-    .interval_min = 0xFF,
-    .interval_max = 0xFF,
+    .interval_min = 8000,
+    .interval_max = 8000,
     .options = 0,
     .num_subevents = NUM_SUBEVENTS,
     .subevent_interval = 0x30,
