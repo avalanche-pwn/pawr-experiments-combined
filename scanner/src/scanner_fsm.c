@@ -22,7 +22,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
 #define INFO "[INFO] "
 
-#define NUM_FAILED_SYNC 3
 #define SCALE_INTERVAL_TO_TIMEOUT(interval) (interval * 5 / 40)
 
 typedef enum { INITIALIZE, FAULT_HANDLING, SYNCING, SYNCED, NUM_STATES } state;
@@ -48,7 +47,7 @@ static struct __packed {
 } pawr_timing;
 
 static struct bt_le_per_adv_sync *default_sync;
-NET_BUF_SIMPLE_DEFINE_STATIC(rsp_buf, 247);
+NET_BUF_SIMPLE_DEFINE_STATIC(rsp_buf, CONFIG_BT_PER_ADV_SYNC_BUF_SIZE);
 
 static struct bt_le_scan_param scan_param = {
     .type = BT_HCI_LE_SCAN_ACTIVE,
@@ -179,7 +178,7 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
     sync_create_param.sid = info->sid;
     sync_create_param.skip = 1;
     sync_create_param.timeout =
-        SCALE_INTERVAL_TO_TIMEOUT(info->interval) * NUM_FAILED_SYNC;
+        SCALE_INTERVAL_TO_TIMEOUT(info->interval) * CONFIG_NUM_FAILED_SYNC;
     LOG_INF(INFO "Establisehd sync interval %d", info->interval);
 
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
