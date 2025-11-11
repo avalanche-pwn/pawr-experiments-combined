@@ -1,20 +1,40 @@
 #include "scanner_fsm.h"
-#include "zephyr/sys/atomic.h"
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/uuid.h>
+
+#include <zephyr/sys/atomic.h>
+
+#include <zephyr/logging/log.h>
+
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/util.h>
+
 
 #ifdef CONFIG_INTERACTIVE
 #include <app/lib/interactive.h>
 #endif
 
+LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+#define FSM "[FSM] "
+#define INFO "[INFO] "
+
 #define NUM_FAILED_SYNC 3
 #define SCALE_INTERVAL_TO_TIMEOUT(interval) (interval * 5 / 40)
+
+typedef enum { INITIALIZE, FAULT_HANDLING, SYNCING, SYNCED, NUM_STATES } state;
+
+typedef enum {
+    NO_FAULT,
+    BLE_ENABLE_FAILED,
+    BLE_SCAN_START_FAILED,
+    BLE_SYNC_TIMEOUT
+} fault;
+
+typedef state state_func();
 
 static state curr_state = INITIALIZE;
 
@@ -45,7 +65,8 @@ static void sync_cb(struct bt_le_per_adv_sync *sync,
     int err;
 
     bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-    printk("Synced to %s with %d subevents\n", le_addr, info->num_subevents);
+    LOG_INF(INFO "Synced to %s with %d subevents", le_addr,
+            info->num_subevents);
 
     default_sync = sync;
 
@@ -56,9 +77,9 @@ static void sync_cb(struct bt_le_per_adv_sync *sync,
 
     err = bt_le_per_adv_sync_subevent(sync, &params);
     if (err) {
-        printk("Failed to set subevents to sync to (err %d)\n", err);
+        LOG_WRN(INFO "Failed to set subevents to sync to (err %d)", err);
     } else {
-        printk("Changed sync to subevent %d\n", subevents[0]);
+        LOG_INF(INFO "Changed sync to subevent %d", subevents[0]);
     }
 }
 
@@ -70,7 +91,7 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 
     bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
 
-    printk("Sync terminated (reason %d)\n", info->reason);
+    LOG_WRN(INFO "Sync terminated (reason %d)", info->reason);
 
     default_sync = NULL;
     atomic_set(&fault_reason, BLE_SYNC_TIMEOUT);
@@ -80,12 +101,12 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 static bool print_ad_field(struct bt_data *data, void *user_data) {
     ARG_UNUSED(user_data);
 
-    printk("    0x%02X: ", data->type);
-    for (size_t i = 0; i < data->data_len; i++) {
-        printk("%02X", data->data[i]);
-    }
+    // printk("    0x%02X: ", data->type);
+    // for (size_t i = 0; i < data->data_len; i++) {
+    //     printk("%02X", data->data[i]);
+    // }
 
-    printk("\n");
+    // printk("\n");
 
     return true;
 }
@@ -106,18 +127,19 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
         rsp_params.response_subevent = info->subevent;
         rsp_params.response_slot = pawr_timing.response_slot;
 
-        printk("Indication: subevent %d, responding in slot %d\n",
-               info->subevent, pawr_timing.response_slot);
+        LOG_INF(INFO "Indication: subevent %d, responding in slot %d",
+                info->subevent, pawr_timing.response_slot);
         bt_data_parse(buf, print_ad_field, NULL);
 
         err = bt_le_per_adv_set_response_data(sync, &rsp_params, &rsp_buf);
         if (err) {
-            printk("Failed to send response (err %d)\n", err);
+            LOG_WRN(INFO "Failed to send response (err %d)", err);
         }
     } else if (buf) {
-        printk("Received empty indication: subevent %d\n", info->subevent);
+        LOG_WRN(INFO "Received empty indication: subevent %d", info->subevent);
     } else {
-        printk("Failed to receive indication: subevent %d\n", info->subevent);
+        LOG_WRN(INFO "Failed to receive indication: subevent %d",
+                info->subevent);
     }
 }
 
@@ -156,23 +178,24 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
     sync_create_param.options = 0;
     sync_create_param.sid = info->sid;
     sync_create_param.skip = 1;
-    sync_create_param.timeout = SCALE_INTERVAL_TO_TIMEOUT(info->interval) *  NUM_FAILED_SYNC;
-    printk("Establisehd sync interval %d", info->interval);
+    sync_create_param.timeout =
+        SCALE_INTERVAL_TO_TIMEOUT(info->interval) * NUM_FAILED_SYNC;
+    LOG_INF(INFO "Establisehd sync interval %d", info->interval);
 
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
 
     if (err) {
-        printk("[Failed to create sync to %s (err %d)\n", addr_str, err);
+        LOG_WRN(INFO "Failed to create sync to %s (err %d)", addr_str, err);
         return;
     }
 
-    printk("Creating sync to %s (SID=%u)...\n", addr_str, info->sid);
+    LOG_INF(INFO "Creating sync to %s (SID=%u)...", addr_str, info->sid);
     err = bt_le_scan_stop();
     if (err) {
-        printk("Couldn't stop le scanning\n");
+        LOG_ERR(INFO "Couldn't stop le scanning");
         return;
     }
-    printk("Stopped le scanning");
+    LOG_INF(INFO "Stopped le scanning");
     k_sem_give(&synced_sem);
 }
 
@@ -189,7 +212,7 @@ static state init() {
 
     err = bt_enable(NULL);
     if (err) {
-        printk("Bluetooth init failed (err %d)\n", err);
+        LOG_ERR(INFO "Bluetooth init failed (err %d)", err);
         atomic_set(&fault_reason, BLE_ENABLE_FAILED);
         return FAULT_HANDLING;
     }
@@ -205,14 +228,14 @@ static state syncing() {
     err = bt_le_scan_start(&scan_param, NULL);
 
     if (err) {
-        printk("Failed to start scanning for sync %d", err);
+        LOG_ERR(INFO "Failed to start scanning for sync %d", err);
         atomic_set(&fault_reason, BLE_SCAN_START_FAILED);
         return FAULT_HANDLING;
     }
 
     for (size_t sync_iters = 0;; sync_iters++) {
         if (k_sem_take(&synced_sem, K_SECONDS(10))) {
-            printk("Still syncing, iterations %d\n", sync_iters);
+            LOG_INF(INFO "Still syncing, iterations %d", sync_iters);
             continue;
         }
         break;
@@ -221,32 +244,33 @@ static state syncing() {
 }
 
 static state handle_fault() {
-    printk("Handling fault %ld\n", atomic_get(&fault_reason));
+    LOG_ERR(INFO "Handling fault %ld", atomic_get(&fault_reason));
     sys_reboot(SYS_REBOOT_COLD);
 }
 
 static state synced() {
-    for(;;) {
+    for (;;) {
         if (k_sem_take(&synced_evt_sem, K_SECONDS(30))) {
-            printk("Still alive\n");
+            LOG_INF(INFO "Still alive");
             continue;
         }
         fault curr = atomic_get(&fault_reason);
 
         k_sem_init(&synced_evt_sem, 0, 1);
         switch (curr) {
-            case NO_FAULT:
-                continue;
-            case BLE_SYNC_TIMEOUT:
-                return SYNCING;
-            default:
-                return FAULT_HANDLING;
+        case NO_FAULT:
+            continue;
+        case BLE_SYNC_TIMEOUT:
+            return SYNCING;
+        default:
+            return FAULT_HANDLING;
         }
     }
     return NUM_STATES;
 }
 
-static state_func *const states[NUM_STATES] = {&init, &handle_fault, &syncing, &synced};
+static state_func *const states[NUM_STATES] = {&init, &handle_fault, &syncing,
+                                               &synced};
 
 static state run_state() { return states[curr_state](); }
 
@@ -267,7 +291,7 @@ static char *state_str(state s) {
 
 void loop() {
     for (;;) {
-        printk("Transitioning to state %s\n", state_str(curr_state));
+        LOG_INF(FSM "Transitioning to state %s", state_str(curr_state));
         curr_state = run_state();
     }
 }

@@ -5,11 +5,6 @@
 
 #include <zephyr/bluetooth/bluetooth.h>
 
-typedef enum { INITIALIZE, FAULT_HANDLING, SYNCING, SYNCED, NUM_STATES } state;
-
-typedef enum { NO_FAULT, BLE_ENABLE_FAILED, BLE_SCAN_START_FAILED, BLE_SYNC_TIMEOUT } fault;
-
-typedef state state_func();
 
 #ifdef CONFIG_INTERACTIVE
 // When building for boards we use the led defined here
