@@ -29,14 +29,40 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define MAX_NUM_SUBEVENTS 5
 #define PACKET_SIZE 5
 #define NAME_LEN 30
+#define MAX_FREE_SLOTS 3
 
 static uint8_t num_subevents = 1;
 static uint8_t last_rsp_slot = 0;
+
+static struct {
+    struct {
+        uint8_t subevent;
+        uint8_t slot;
+    } data[MAX_FREE_SLOTS];
+    uint8_t size;
+} free_list;
 
 static struct bt_le_per_adv_subevent_data_params
     subevent_data_params[MAX_NUM_SUBEVENTS];
 static struct net_buf_simple bufs[MAX_NUM_SUBEVENTS];
 static uint8_t backing_store[MAX_NUM_SUBEVENTS][PACKET_SIZE];
+
+typedef struct {
+    uint16_t dev_id;
+    uint8_t inactive_for;
+} slot_data;
+
+static slot_data rsp_slots[MAX_NUM_SUBEVENTS][NUM_RSP_SLOTS];
+static rsp_data current_rsp;
+
+static struct bt_le_ext_adv *pawr_adv;
+subevent_sel_info selection_data;
+
+static uint8_t adv_flags = (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
+static const struct bt_data ad[] = {
+    BT_DATA(BT_DATA_FLAGS, &adv_flags, sizeof(adv_flags)),
+    BT_DATA(BT_DATA_MANUFACTURER_DATA, &selection_data, sizeof(selection_data)),
+};
 
 static struct bt_le_per_adv_param per_adv_params = {
     .interval_min = 8000,
@@ -75,6 +101,19 @@ static void request_cb(struct bt_le_ext_adv *adv,
     to_send = MIN(request->count, ARRAY_SIZE(subevent_data_params));
 
     for (size_t i = 0; i < to_send; i++) {
+        for (size_t j = 0; j < NUM_RSP_SLOTS; j++) {
+            slot_data *s = &rsp_slots[i][j];
+            s->inactive_for++;
+            if (s->dev_id != 0 && s->inactive_for > 3) {
+                LOG_INF(INFO "Device with id %d, disconnected", s->dev_id);
+                s->dev_id = 0;
+                s->inactive_for = 0;
+
+                free_list.data[free_list.size].subevent = i;
+                free_list.data[free_list.size].slot = j;
+                free_list.size++;
+            }
+        }
         buf = &bufs[i];
         buf->data[buf->len - 1] = counter++;
 
@@ -93,26 +132,44 @@ static void request_cb(struct bt_le_ext_adv *adv,
     }
 }
 
-static bool print_ad_field(struct bt_data *data, void *user_data) {
-    ARG_UNUSED(user_data);
-
-    // printk("    0x%02X: ", data->type);
-    // for (size_t i = 0; i < data->data_len; i++) {
-    //     printk("%02X", data->data[i]);
-    // }
-
-    // printk("\n");
-
-    return true;
-}
-
 static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf) {
     if (buf) {
         LOG_INF(INFO "Response: subevent %d, slot %d", info->subevent,
                 info->response_slot);
-        bt_data_parse(buf, print_ad_field, NULL);
+        if (buf->len != sizeof(rsp_data)) {
+            LOG_WRN(INFO "Invalid data format");
+            return;
+        }
+        LOG_HEXDUMP_INF(buf->data, buf->len, "Received ");
+        memcpy(&current_rsp, buf->data, buf->len);
+        slot_data *slot = &rsp_slots[info->subevent][info->response_slot];
+        if (slot->dev_id == 0) {
+            // slot is empty -> register new device
+            LOG_INF(INFO "New device registerd id: %d", current_rsp.sender_id);
+            slot->dev_id = current_rsp.sender_id;
+            slot->inactive_for = 0;
+            
+            if (selection_data.rsp_slot == NUM_RSP_SLOTS) {
+                selection_data.subevent++;
+                selection_data.rsp_slot = 0;
+            } else {
+                selection_data.rsp_slot++;
+            }
+
+            int err = bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
+            if (err) {
+                LOG_ERR(INFO "Failed to set Extended ADV data (err %d)", err);
+                // TODO HANDLE THIS
+            }
+
+            return;
+        } else if (slot->dev_id == current_rsp.sender_id) {
+            // Got response from excepted sender
+            slot->inactive_for = 0;
+            return;
+        }
     }
 }
 static const struct bt_le_ext_adv_cb adv_cb = {
@@ -125,12 +182,10 @@ static const struct bt_le_ext_adv_cb adv_cb = {
 typedef enum { INITIALIZE, ADVERTISING, FAULT_HANDLING, NUM_STATES } state;
 typedef state state_func();
 
-subevent_sel_info selection_data;
-
 static state init() {
     int err;
     k_sleep(K_SECONDS(5));
-    struct bt_le_ext_adv *pawr_adv;
+
 #ifdef CONFIG_INTERACTIVE
     init_led(master_led);
 #endif // CONFIG_INTERACTIVE
@@ -157,14 +212,8 @@ static state init() {
         return FAULT_HANDLING;
     }
 
-    static uint8_t adv_flags = (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
     selection_data.subevent = num_subevents - 1;
-    selection_data.rsp_slot = last_rsp_slot + 1;
-    static const struct bt_data ad[] =
-        {
-            BT_DATA(BT_DATA_FLAGS, &adv_flags, sizeof(adv_flags)),
-            BT_DATA(BT_DATA_MANUFACTURER_DATA, &selection_data, sizeof(selection_data)),
-        };
+    selection_data.rsp_slot = last_rsp_slot;
 
     err = bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err) {

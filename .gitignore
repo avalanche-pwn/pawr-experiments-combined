@@ -9,7 +9,7 @@
 # build
 /build*
 build/
-.cache/
+.cache
 compile_commands.json
 /twister-out*
 
