@@ -13,6 +13,7 @@
 #include <zephyr/sys/reboot.h>
 
 #include <app/lib/transfer.h>
+#include <app/lib/common.h>
 
 #include "advertiser_fsm.h"
 #include "zephyr/bluetooth/gap.h"
@@ -31,14 +32,13 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define NAME_LEN 30
 #define MAX_FREE_SLOTS 3
 
-static uint8_t num_subevents = 1;
-static uint8_t last_rsp_slot = 0;
+static pawr_timing last_used = {
+    .subevent = CONFIG_NUM_REGISTER_SLOTS / MAX_NUM_SUBEVENTS,
+    .rsp_slot = CONFIG_NUM_REGISTER_SLOTS % MAX_NUM_SUBEVENTS,
+};
 
 static struct {
-    struct {
-        uint8_t subevent;
-        uint8_t slot;
-    } data[MAX_FREE_SLOTS];
+    pawr_timing data[MAX_FREE_SLOTS];
     uint8_t size;
 } free_list;
 
@@ -110,7 +110,7 @@ static void request_cb(struct bt_le_ext_adv *adv,
                 s->inactive_for = 0;
 
                 free_list.data[free_list.size].subevent = i;
-                free_list.data[free_list.size].slot = j;
+                free_list.data[free_list.size].rsp_slot = j;
                 free_list.size++;
             }
         }
@@ -151,12 +151,12 @@ static void response_cb(struct bt_le_ext_adv *adv,
             slot->dev_id = current_rsp.sender_id;
             slot->inactive_for = 0;
             
-            if (selection_data.rsp_slot == NUM_RSP_SLOTS) {
-                selection_data.subevent++;
-                selection_data.rsp_slot = 0;
-            } else {
-                selection_data.rsp_slot++;
-            }
+            // if (selection_data.rsp_slot == NUM_RSP_SLOTS) {
+            //     selection_data.subevent++;
+            //     selection_data.rsp_slot = 0;
+            // } else {
+            //     selection_data.rsp_slot++;
+            // }
 
             int err = bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
             if (err) {
@@ -204,7 +204,7 @@ static state init() {
     }
 
     /* Set periodic advertising parameters */
-    per_adv_params.num_subevents = num_subevents;
+    per_adv_params.num_subevents = MAX_NUM_SUBEVENTS;
     err = bt_le_per_adv_set_param(pawr_adv, &per_adv_params);
     if (err) {
         LOG_ERR(INFO "Failed to set periodic advertising parameters (err %d)",
@@ -212,8 +212,7 @@ static state init() {
         return FAULT_HANDLING;
     }
 
-    selection_data.subevent = num_subevents - 1;
-    selection_data.rsp_slot = last_rsp_slot;
+    selection_data.num_reg_slots = CONFIG_NUM_REGISTER_SLOTS;
 
     err = bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err) {

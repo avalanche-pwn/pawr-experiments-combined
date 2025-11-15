@@ -13,3 +13,14 @@ endmenu
 module = APP
 module-str = APP
 source "subsys/logging/Kconfig.template.log_config"
+
+
+config NUM_REGISTER_SLOTS
+    int "Number of slots reserved for new device discovery"
+    default 5
+    help
+        Advertiser will reserve NUM_REGIStER_SLOTS from the beginning, goig
+        from subevent[0] rsp_slot[0] upwards for allowing new devices to inform
+        about their presence. Connecting devices should select one of the slots
+        at random. This is to prevent interference between multipledevices
+        connecting at the same rsp_slot.
