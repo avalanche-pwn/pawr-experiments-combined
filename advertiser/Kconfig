@@ -24,3 +24,9 @@ config NUM_REGISTER_SLOTS
         about their presence. Connecting devices should select one of the slots
         at random. This is to prevent interference between multipledevices
         connecting at the same rsp_slot.
+
+config MAX_FREE_SLOTS
+    int "Maximum number of slots in free_list"
+    default 20
+    help
+        Maximum number of slots in free_list

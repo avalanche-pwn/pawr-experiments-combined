@@ -9,4 +9,4 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(app LANGUAGES C)
 
-target_sources(app PRIVATE src/main.c src/advertiser_fsm.c)
+target_sources(app PRIVATE src/main.c src/advertiser_fsm.c src/free_list.c)

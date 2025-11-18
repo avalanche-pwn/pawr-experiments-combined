@@ -20,3 +20,9 @@ config NUM_FAILED_SYNC
 	help
         After NUM_FAILED_SYNCs elapses the scanner will re enable ble scanning,
         to sync with ext advertising.
+
+config SCANNER_ID
+    int "ID of current scanner"
+    default 1
+    help
+        An id of scanner as identified with advertiser needs to be 1 or higher.
