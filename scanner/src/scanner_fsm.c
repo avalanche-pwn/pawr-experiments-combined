@@ -1,25 +1,6 @@
 #include "scanner_fsm.h"
-#include "zephyr/kernel.h"
-
-#include <zephyr/bluetooth/bluetooth.h>
-#include <zephyr/bluetooth/conn.h>
-#include <zephyr/bluetooth/gatt.h>
-#include <zephyr/bluetooth/hci.h>
-#include <zephyr/bluetooth/uuid.h>
-
-#include <zephyr/sys/atomic.h>
-
-#include <zephyr/logging/log.h>
-
-#include <zephyr/random/random.h>
-#include <zephyr/sys/reboot.h>
-#include <zephyr/sys/util.h>
-
-#include <app/lib/common.h>
-#include <app/lib/transfer.h>
-#ifdef CONFIG_INTERACTIVE
-#include <app/lib/interactive.h>
-#endif
+#include "app/lib/transfer.h"
+#include "zephyr/net_buf.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
@@ -27,6 +8,9 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 #define SCALE_INTERVAL_TO_TIMEOUT(interval) (interval * 5 / 40)
 
+/**
+ * Enum for states of this fsm.
+ */
 typedef enum {
     INITIALIZE,
     FAULT_HANDLING,
@@ -35,34 +19,185 @@ typedef enum {
     CONFIRMING,
     SYNCED,
     NUM_STATES
-} state;
+} state_t;
 
+/**
+ * Enum for faults/events that can happen during fsm cycle.
+ */
 typedef enum {
     NO_FAULT,
     BLE_ENABLE_FAILED,
     BLE_SCAN_START_FAILED,
     BLE_SYNC_TIMEOUT,
-    BLE_SYNC_DELETED
-} fault;
+    BLE_SYNC_DELETED,
+    CONFIRMATION_FAILED,
+    DIDNT_RECEIVE_ACK,
+} fault_t;
 
-typedef state state_func();
+typedef state_t state_func();
 
-static state curr_state = INITIALIZE;
+/**
+ * Struct for data returned from advertisement.
+ * TODO should be replaced by bt_data.
+ */
+typedef struct __attribute__((__packed__)) {
+    uint8_t len;
+    uint8_t flags;
+} excepted_data_t;
 
+static void sync_cb(struct bt_le_per_adv_sync *sync,
+                    struct bt_le_per_adv_sync_synced_info *info);
+
+/**
+ * \brief Callback for sync termination.
+ * This callback stays the same for the entire time. When scan is terminated it
+ * set's the fault reason which is for current state to handle properly.
+ */
+static void term_cb(struct bt_le_per_adv_sync *sync,
+                    const struct bt_le_per_adv_sync_term_info *info);
+
+/**
+ * \brief Callback for receiving data from advertiser during registration.
+ * It replies in one of the slots available by sel_info. The slot is
+ * choosen randomly. This is to hopefully not colide with other devices trying
+ * to register at the same time.
+ */
+static void register_recv_cb(struct bt_le_per_adv_sync *sync,
+                             const struct bt_le_per_adv_sync_recv_info *info,
+                             struct net_buf_simple *buf);
+/**
+ * \brief Callback for receiving data from advertiser during confirmation state.
+ * It excepts to receive proper ack, if it doesn't it should throw the scanner
+ * back into registering mode. This could happen either because of interference
+ * or other device taking the spot.
+ */
+static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
+                            const struct bt_le_per_adv_sync_recv_info *info,
+                            struct net_buf_simple *buf);
+
+/**
+ * Callback used for sending ack to advertiser
+ */
+static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
+                        const struct bt_le_per_adv_sync_recv_info *info,
+                        struct net_buf_simple *buf);
+
+/**
+ * \brief Callback used for initialising pawr.
+ * When ext adv packet is handled it sets proper sync parameters.
+ */
+static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
+                         struct net_buf_simple *buf);
+
+/**
+ * \brief Sets the response data via bt_le_per_adv_set_response_data
+ * Since we are always using the same data there is no need to repeat this
+ * process each time.
+ *
+ * \return 0 on success otherwies error returned by
+ * bt_le_per_adv_set_response_data.
+ */
+static int set_rsp_data(struct bt_le_per_adv_sync *sync,
+                        const struct bt_le_per_adv_sync_recv_info *info);
+
+static state_t init();
+static state_t syncing();
+static state_t handle_fault();
+static state_t registering();
+static state_t confirming();
+static state_t synced();
+
+/**
+ * Initialise response buffer with data
+ */
+static void init_bufs();
+
+/**
+ * Runs current state as defined by current_state
+ * \return Next state_t that should be processed
+ */
+static state_t run_state();
+static char *state_str(state_t s);
+
+static state_func *const states[NUM_STATES] = {
+    [INITIALIZE] = &init,       [FAULT_HANDLING] = &handle_fault,
+    [SYNCING] = &syncing,       [REGISTERING] = &registering,
+    [CONFIRMING] = &confirming, [SYNCED] = &synced};
+
+/**
+ * Current state of fsm.
+ */
+static state_t curr_state = INITIALIZE;
+/**
+ * Reason why state exited
+ */
 static atomic_t fault_reason = ATOMIC_INIT(NO_FAULT);
 
-static struct bt_le_per_adv_response_params rsp_params;
-static subevent_sel_info sel_info;
-static register_data selected_slot;
-static struct bt_le_per_adv_sync *default_sync;
-NET_BUF_SIMPLE_DEFINE_STATIC(rsp_buf, CONFIG_BT_PER_ADV_SYNC_BUF_SIZE);
+/**
+ * Information about how to select subevent
+ */
+static subevent_sel_info_t sel_info;
+static register_data_t selected_slot;
 
-static struct bt_le_scan_param scan_param = {
+/**
+ * Current ble sync object.
+ */
+static struct bt_le_per_adv_sync *default_sync;
+
+/**
+ * Netbuf for responses from scanner
+ */
+NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, sizeof(rsp_data_t));
+
+/**
+ * Parameters for scanning for ext adv packets.
+ */
+static const struct bt_le_scan_param scan_param = {
     .type = BT_HCI_LE_SCAN_ACTIVE,
     .options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
     .interval = 0x00A0, // 100 ms
     .window = 0x0050,   // 50 ms
 };
+
+K_SEM_DEFINE(synced_evt_sem, 0, 1);
+K_SEM_DEFINE(register_evt_sem, 0, 1);
+K_SEM_DEFINE(synced_sem, 0, 1);
+
+/**
+ * Data which we send to advertiser.
+ */
+static const rsp_data_t rsp_data_i = {.sender_id = CONFIG_SCANNER_ID};
+
+/**
+ * \brief Number of consecutive uncofirmed responses in confirming state.
+ * If this number reaches CONFIG_MAX_UNCONFIRMED_TICKS, the device will try to
+ * register again.
+ */
+static uint8_t unconfirmed_ticks = 0;
+
+/**
+ * \brief Callbacks for periodic advertisment sync.
+ * This can be changed in runtime depending on state.
+ * Initial values are for syncing register state.
+ */
+static struct bt_le_per_adv_sync_cb sync_callbacks = {
+    .synced = sync_cb,
+    .term = term_cb,
+    .recv = register_recv_cb,
+};
+
+static struct bt_le_scan_cb scan_callbacks = {
+    .recv = scan_recv_cb,
+    .timeout = NULL,
+};
+
+#ifdef CONFIG_INTERACTIVE
+// When building for boards we use the led defined here
+// to indicate that this board is a sensor
+#define SLAVE_LED_NODE DT_ALIAS(led2)
+
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(SLAVE_LED_NODE, gpios);
+#endif
 
 static void sync_cb(struct bt_le_per_adv_sync *sync,
                     struct bt_le_per_adv_sync_synced_info *info) {
@@ -90,8 +225,6 @@ static void sync_cb(struct bt_le_per_adv_sync *sync,
     }
 }
 
-K_SEM_DEFINE(synced_evt_sem, 0, 1);
-
 static void term_cb(struct bt_le_per_adv_sync *sync,
                     const struct bt_le_per_adv_sync_term_info *info) {
     char le_addr[BT_ADDR_LE_STR_LEN];
@@ -109,54 +242,21 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
     k_sem_give(&synced_evt_sem);
 }
 
-static bool parse_register_data(struct bt_data *data, void *idx) {
-    bool value = true;
-    if (*(uint8_t *)idx != selected_slot.rsp_slot)
-        goto ret;
-    if (data->type != REGISTER_DATA)
-        goto ret;
-
-    value = false;
-    memcpy(&selected_slot, data->data, sizeof(selected_slot));
-    LOG_INF("%d %d", selected_slot.subevent, selected_slot.rsp_slot);
-
-ret:
-    *(uint8_t *)idx = *(uint8_t *)idx + 1;
-    return value;
-}
-
-static const rsp_data rsp_data_i = {.sender_id = CONFIG_SCANNER_ID};
-
-K_SEM_DEFINE(register_evt_sem, 0, 1);
 static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                              const struct bt_le_per_adv_sync_recv_info *info,
                              struct net_buf_simple *buf) {
-    static struct bt_le_per_adv_response_params rsp_params;
-    register_data *recv_data;
+    register_data_t *recv_data;
     int err;
 
     if (buf && buf->len) {
-        /* Echo the data back to the advertiser */
-        net_buf_simple_reset(&rsp_buf);
-        net_buf_simple_add_mem(&rsp_buf, &rsp_data_i, sizeof(rsp_data));
-
         selected_slot.rsp_slot = sys_rand8_get() % sel_info.num_reg_slots;
-        rsp_params.request_event = info->periodic_event_counter;
-        rsp_params.request_subevent = info->subevent;
-        /* Respond in current subevent and assigned response slot */
-        rsp_params.response_subevent = info->subevent;
-        rsp_params.response_slot = selected_slot.rsp_slot;
 
-        LOG_INF(INFO "Indication: subevent %d, responding in slot %d",
-                info->subevent, selected_slot.rsp_slot);
-        int idx = 0;
-
-        err = bt_le_per_adv_set_response_data(sync, &rsp_params, &rsp_buf);
+        err = set_rsp_data(sync, info);
 
         // TODO this probably can cause read over the net bufs len
         // If a malicious device sends shorter buf the pull length might be over
         // it's size
-        recv_data = net_buf_simple_pull_mem(buf, sizeof(register_data) *
+        recv_data = net_buf_simple_pull_mem(buf, sizeof(register_data_t) *
                                                      sel_info.num_reg_slots);
         memcpy(&selected_slot, &recv_data[selected_slot.rsp_slot],
                sizeof(selected_slot));
@@ -177,43 +277,39 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
                             const struct bt_le_per_adv_sync_recv_info *info,
                             struct net_buf_simple *buf) {
     int err;
-    ack_data *recv_ack_data;
+    ack_data_t *recv_ack_data;
     size_t reg_data_size = 0;
     size_t reg_data_count = 0;
 
     if (buf && buf->len) {
-        /* Echo the data back to the advertiser */
-        net_buf_simple_reset(&rsp_buf);
-        net_buf_simple_add_mem(&rsp_buf, &rsp_data_i, sizeof(rsp_data));
-
-        rsp_params.request_event = info->periodic_event_counter;
-        rsp_params.request_subevent = info->subevent;
-        /* Respond in current subevent and assigned response slot */
-        rsp_params.response_subevent = info->subevent;
-        rsp_params.response_slot = selected_slot.rsp_slot;
-
-        LOG_INF(INFO "Indication: subevent %d, responding in slot %d",
-                info->subevent, selected_slot.rsp_slot);
-
         if (selected_slot.subevent == 0) {
             reg_data_count = sel_info.num_reg_slots;
-            reg_data_size = sizeof(register_data) * sel_info.num_reg_slots;
+            reg_data_size = sizeof(register_data_t) * sel_info.num_reg_slots;
             net_buf_simple_pull_mem(buf, reg_data_size);
         }
 
         recv_ack_data = net_buf_simple_pull_mem(buf, buf->len);
 
-        LOG_INF("IDX %d", selected_slot.rsp_slot - reg_data_count);
-
         if (recv_ack_data[selected_slot.rsp_slot - reg_data_count].ack_id !=
             CONFIG_SCANNER_ID) {
             LOG_WRN("Failed to confirm reservation");
+            unconfirmed_ticks += 1;
         }
 
-        err = bt_le_per_adv_set_response_data(sync, &rsp_params, &rsp_buf);
+        if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
+            atomic_set(&fault_reason, CONFIRMATION_FAILED);
+            k_sem_give(&synced_evt_sem);
+            return;
+        }
+
+        err = set_rsp_data(sync, info);
         if (err) {
             LOG_WRN(INFO "Failed to send response (err %d)", err);
         }
+
+        atomic_set(&fault_reason, NO_FAULT);
+        k_sem_give(&synced_evt_sem);
+
     } else if (buf) {
         LOG_WRN(INFO "Received empty indication: subevent %d", info->subevent);
     } else {
@@ -221,18 +317,6 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
                 info->subevent);
     }
 }
-static struct bt_le_per_adv_sync_cb sync_callbacks = {
-    .synced = sync_cb,
-    .term = term_cb,
-    .recv = register_recv_cb,
-};
-
-K_SEM_DEFINE(synced_sem, 0, 1);
-
-typedef struct __attribute__((__packed__)) {
-    uint8_t len;
-    uint8_t flags;
-} excepted_data;
 
 static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
                          struct net_buf_simple *buf) {
@@ -255,7 +339,7 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
         return;
     }
     uint8_t read = 0;
-    excepted_data data_desc;
+    excepted_data_t data_desc;
     while (buf->len - read > sizeof(data_desc)) {
         memcpy(&data_desc, buf->data + read, sizeof(data_desc));
         if (data_desc.len > 0 && data_desc.flags == BT_DATA_MANUFACTURER_DATA) {
@@ -292,16 +376,72 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
     k_sem_give(&synced_sem);
 }
 
-static struct bt_le_scan_cb scan_callbacks = {
-    .recv = scan_recv_cb,
-    .timeout = NULL,
-};
+static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
+                        const struct bt_le_per_adv_sync_recv_info *info,
+                        struct net_buf_simple *buf) {
+    int err;
+    ack_data_t *recv_ack_data;
+    size_t reg_data_size = 0;
+    size_t reg_data_count = 0;
 
-static state init() {
+    if (buf && buf->len) {
+        if (selected_slot.subevent == 0) {
+            reg_data_count = sel_info.num_reg_slots;
+            reg_data_size = sizeof(register_data_t) * sel_info.num_reg_slots;
+            net_buf_simple_pull_mem(buf, reg_data_size);
+        }
+
+        recv_ack_data = net_buf_simple_pull_mem(buf, buf->len);
+
+        if (recv_ack_data[selected_slot.rsp_slot - reg_data_count].ack_id !=
+            CONFIG_SCANNER_ID) {
+            LOG_WRN("Didn't receive ack");
+            unconfirmed_ticks += 1;
+        } else {
+            unconfirmed_ticks = 0;
+        }
+
+        if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
+            atomic_set(&fault_reason, DIDNT_RECEIVE_ACK);
+            k_sem_give(&synced_evt_sem);
+            return;
+        }
+
+        err = set_rsp_data(sync, info);
+        if (err) {
+            LOG_WRN(INFO "Failed to send response (err %d)", err);
+        }
+    } else if (buf) {
+        LOG_WRN(INFO "Received empty indication: subevent %d", info->subevent);
+    } else {
+        LOG_WRN(INFO "Failed to receive indication: subevent %d",
+                info->subevent);
+    }
+}
+
+static int set_rsp_data(struct bt_le_per_adv_sync *sync,
+                        const struct bt_le_per_adv_sync_recv_info *info) {
+    static struct bt_le_per_adv_response_params rsp_params;
+
+    rsp_params.request_event = info->periodic_event_counter;
+    rsp_params.request_subevent = info->subevent;
+    /* Respond in current subevent and assigned response slot */
+    rsp_params.response_subevent = info->subevent;
+    rsp_params.response_slot = selected_slot.rsp_slot;
+
+    LOG_INF(INFO "Indication: subevent %d, responding in slot %d",
+            info->subevent, selected_slot.rsp_slot);
+
+    return bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
+}
+
+static state_t init() {
     int err;
 #ifdef CONFIG_INTERACTIVE
     init_led(led);
 #endif
+
+    init_bufs();
 
     selected_slot.subevent = 0;
 
@@ -316,7 +456,7 @@ static state init() {
     return SYNCING;
 }
 
-static state syncing() {
+static state_t syncing() {
     int err;
 
     bt_le_per_adv_sync_cb_register(&sync_callbacks);
@@ -338,13 +478,14 @@ static state syncing() {
     return REGISTERING;
 }
 
-static state handle_fault() {
+static state_t handle_fault() {
     LOG_ERR(INFO "Handling fault %ld", atomic_get(&fault_reason));
+    // Wait for a while so that buffer get's flushed
     k_sleep(K_SECONDS(10));
     sys_reboot(SYS_REBOOT_COLD);
 }
 
-static state registering() {
+static state_t registering() {
     struct bt_le_per_adv_sync_param sync_create_param;
     struct bt_le_per_adv_sync_info info;
     struct bt_le_per_adv_sync *sync;
@@ -352,7 +493,7 @@ static state registering() {
 
     k_sem_take(&register_evt_sem, K_FOREVER);
     k_sleep(K_SECONDS(10));
-    sync_callbacks.recv = &confirm_recv_cb;
+
     bt_le_per_adv_sync_get_info(default_sync, &info);
 
     bt_addr_le_copy(&sync_create_param.addr, &info.addr);
@@ -361,6 +502,7 @@ static state registering() {
     sync_create_param.skip = 1;
     sync_create_param.timeout =
         SCALE_INTERVAL_TO_TIMEOUT(info.interval) * CONFIG_NUM_FAILED_SYNC;
+
     LOG_INF(INFO "Establisehd sync interval %d", info.interval);
 
     bt_le_per_adv_sync_delete(default_sync);
@@ -368,25 +510,39 @@ static state registering() {
 
     if (err) {
         LOG_WRN(INFO "Failed to recreate sync (err: %d)", err);
+        // Wait for a while so that buffer get's flushed
         return FAULT_HANDLING;
     }
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
-    fault curr = atomic_get(&fault_reason);
+    fault_t curr = atomic_get(&fault_reason);
     if (curr != BLE_SYNC_DELETED)
         return FAULT_HANDLING;
     return CONFIRMING;
 }
 
-static state confirming() { k_sleep(K_FOREVER); }
+static state_t confirming() {
+    unconfirmed_ticks = 0;
+    sync_callbacks.recv = &confirm_recv_cb;
 
-static state synced() {
+    k_sem_take(&synced_evt_sem, K_FOREVER);
+    k_sem_reset(&synced_evt_sem);
+    if (atomic_get(fault_reason) == CONFIRMATION_FAILED) {
+        return REGISTERING;
+    }
+    return SYNCED;
+}
+
+static state_t synced() {
+    sync_callbacks.recv = &ack_recv_cb;
+    unconfirmed_ticks = 0;
+
     for (;;) {
         if (k_sem_take(&synced_evt_sem, K_SECONDS(30))) {
             LOG_INF(INFO "Still alive");
             continue;
         }
-        fault curr = atomic_get(&fault_reason);
+        fault_t curr = atomic_get(&fault_reason);
 
         k_sem_init(&synced_evt_sem, 0, 1);
         switch (curr) {
@@ -401,12 +557,13 @@ static state synced() {
     return NUM_STATES;
 }
 
-static state_func *const states[NUM_STATES] = {
-    &init, &handle_fault, &syncing, &registering, &confirming, &synced};
+static void init_bufs() {
+    net_buf_simple_add_mem(&scanner_rsp_buf, &rsp_data_i, sizeof(rsp_data_t));
+}
 
-static state run_state() { return states[curr_state](); }
+static state_t run_state() { return states[curr_state](); }
 
-static char *state_str(state s) {
+static char *state_str(state_t s) {
     switch (s) {
     case INITIALIZE:
         return "INITIALIZE";

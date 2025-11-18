@@ -26,3 +26,9 @@ config SCANNER_ID
     default 1
     help
         An id of scanner as identified with advertiser needs to be 1 or higher.
+
+config MAX_UNCONFIRMED_TICKS
+    int "Number of events before retrying registration"
+    default 3
+    help
+        After MAX_UNCONFIRMED_TICKS events the scanner will try reregistering.

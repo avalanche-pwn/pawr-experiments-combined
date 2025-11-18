@@ -6,11 +6,11 @@
 
 typedef struct PACKED {
     uint8_t num_reg_slots;
-} subevent_sel_info;
+} subevent_sel_info_t;
 
 typedef struct PACKED {
     uint16_t sender_id;
-} rsp_data;
+} rsp_data_t;
 
 typedef enum PACKED {
     REGISTER_DATA,
@@ -20,10 +20,10 @@ typedef enum PACKED {
 typedef struct PACKED {
     uint8_t subevent;
     uint8_t rsp_slot;
-} register_data;
+} register_data_t;
 
 typedef struct PACKED {
     uint16_t ack_id;
-} ack_data;
+} ack_data_t;
 
 #endif // APP_LIB_TRANSFER_H

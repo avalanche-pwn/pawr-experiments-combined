@@ -1,17 +1,29 @@
 #ifndef SCANNER_FSM_H
 #define SCANNER_FSM_H
 
-#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/uuid.h>
 
+#include <zephyr/sys/atomic.h>
+
+#include <zephyr/logging/log.h>
+
+#include <zephyr/random/random.h>
+#include <zephyr/sys/reboot.h>
+#include <zephyr/sys/util.h>
+
+#include <zephyr/drivers/gpio.h>
+
+#include <app/lib/common.h>
+#include <app/lib/transfer.h>
 
 #ifdef CONFIG_INTERACTIVE
-// When building for boards we use the led defined here
-// to indicate that this board is a sensor
-#define SLAVE_LED_NODE DT_ALIAS(led2)
-
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(SLAVE_LED_NODE, gpios);
+#include <app/lib/interactive.h>
 #endif
 
 
