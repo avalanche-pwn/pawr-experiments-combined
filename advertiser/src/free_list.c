@@ -4,11 +4,11 @@
 
 K_MUTEX_DEFINE(free_list_mutex);
 static struct {
-    register_data data[CONFIG_MAX_FREE_SLOTS];
+    register_data_t data[CONFIG_MAX_FREE_SLOTS];
     uint8_t size;
 } free_list;
 
-int8_t free_list_append(register_data d) {
+int8_t free_list_append(register_data_t d) {
     int8_t ret = 0;
     k_mutex_lock(&free_list_mutex, K_FOREVER);
     
@@ -24,7 +24,7 @@ unlock:
     return ret;
 }
 
-int8_t free_list_pop(register_data *ret_val) {
+int8_t free_list_pop(register_data_t *ret_val) {
     int8_t ret = 0;;
     k_mutex_lock(&free_list_mutex, K_FOREVER);
     if (free_list.size == 0) {

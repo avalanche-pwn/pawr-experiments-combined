@@ -5,6 +5,6 @@
 #include <stdint.h>
 
 
-int8_t free_list_append(register_data d);
-int8_t free_list_pop(register_data *ret_val);
+int8_t free_list_append(register_data_t d);
+int8_t free_list_pop(register_data_t *ret_val);
 #endif // FREE_LIST_H
