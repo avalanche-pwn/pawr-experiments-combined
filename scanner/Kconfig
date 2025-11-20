@@ -29,6 +29,6 @@ config SCANNER_ID
 
 config MAX_UNCONFIRMED_TICKS
     int "Number of events before retrying registration"
-    default 3
+    default 4
     help
         After MAX_UNCONFIRMED_TICKS events the scanner will try reregistering.

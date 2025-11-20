@@ -22,6 +22,7 @@
 
 #include <app/lib/common.h>
 #include <app/lib/transfer.h>
+#include <app/lib/data_generator.h>
 
 #ifdef CONFIG_INTERACTIVE
 #include <app/lib/interactive.h>

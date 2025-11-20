@@ -1,4 +1,6 @@
 #include "scanner_fsm.h"
+#include "app/lib/data_generator.h"
+#include "zephyr/bluetooth/bluetooth.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
@@ -15,7 +17,8 @@ typedef enum {
     SYNCING,
     REGISTERING,
     CONFIRMING,
-    SYNCED,
+    SLEEPING,
+    ENABLED,
     NUM_STATES
 } state_t;
 
@@ -23,14 +26,16 @@ typedef enum {
  * Enum for faults/events that can happen during fsm cycle.
  */
 typedef enum {
-    NO_FAULT,
-    BLE_ENABLE_FAILED,
-    BLE_SCAN_START_FAILED,
-    BLE_SYNC_TIMEOUT,
-    BLE_SYNC_DELETED,
-    CONFIRMATION_FAILED,
-    DIDNT_RECEIVE_ACK,
-} fault_t;
+    EVT_NO_FAULT,
+    EVT_BLE_ENABLE_FAILED,
+    EVT_BLE_SCAN_START_FAILED,
+    EVT_BLE_SYNC_TIMEOUT,
+    EVT_BLE_SYNC_DELETED,
+    EVT_CONFIRMATION_FAILED,
+    EVT_DIDNT_RECEIVE_ACK,
+    EVT_DATA_GENERATED,
+    EVT_GOT_ACK,
+} evt_t;
 
 typedef state_t state_func();
 
@@ -98,17 +103,19 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
 static int set_rsp_data(struct bt_le_per_adv_sync *sync,
                         const struct bt_le_per_adv_sync_recv_info *info);
 
+/**
+ * Initialise response buffer with data
+ */
+static void init_buf_cb();
+static void data_generated_cb();
+
 static state_t init();
 static state_t syncing();
 static state_t handle_fault();
 static state_t registering();
 static state_t confirming();
-static state_t synced();
-
-/**
- * Initialise response buffer with data
- */
-static void init_bufs();
+static state_t sleeping();
+static state_t enabled();
 
 /**
  * Runs current state as defined by current_state
@@ -120,7 +127,8 @@ static char *state_str(state_t s);
 static state_func *const states[NUM_STATES] = {
     [INITIALIZE] = &init,       [FAULT_HANDLING] = &handle_fault,
     [SYNCING] = &syncing,       [REGISTERING] = &registering,
-    [CONFIRMING] = &confirming, [SYNCED] = &synced};
+    [CONFIRMING] = &confirming, [SLEEPING] = &sleeping,
+    [ENABLED] = &enabled};
 
 /**
  * Current state of fsm.
@@ -129,7 +137,7 @@ static state_t curr_state = INITIALIZE;
 /**
  * Reason why state exited
  */
-static atomic_t fault_reason = ATOMIC_INIT(NO_FAULT);
+static atomic_t fault_reason = ATOMIC_INIT(EVT_NO_FAULT);
 
 /**
  * Information about how to select subevent
@@ -145,7 +153,7 @@ static struct bt_le_per_adv_sync *default_sync;
 /**
  * Netbuf for responses from scanner
  */
-NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, sizeof(rsp_data_t));
+NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, sizeof(rsp_data_t) + 10);
 
 /**
  * Parameters for scanning for ext adv packets.
@@ -187,6 +195,13 @@ static struct bt_le_per_adv_sync_cb sync_callbacks = {
 static struct bt_le_scan_cb scan_callbacks = {
     .recv = scan_recv_cb,
     .timeout = NULL,
+};
+
+static data_generator_config_t generator_config = {
+    .data = &scanner_rsp_buf,
+    .interval = CONFIG_BLOCK_TIME,
+    .init_buf = &init_buf_cb,
+    .generated = &data_generated_cb,
 };
 
 #ifdef CONFIG_INTERACTIVE
@@ -233,9 +248,9 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 
     default_sync = NULL;
 
-    atomic_set(&fault_reason, BLE_SYNC_TIMEOUT);
+    atomic_set(&fault_reason, EVT_BLE_SYNC_TIMEOUT);
     if (info->reason == 22)
-        atomic_set(&fault_reason, BLE_SYNC_DELETED);
+        atomic_set(&fault_reason, EVT_BLE_SYNC_DELETED);
 
     k_sem_give(&synced_evt_sem);
 }
@@ -299,14 +314,14 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
             unconfirmed_ticks += 1;
 
             if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
-                atomic_set(&fault_reason, CONFIRMATION_FAILED);
+                atomic_set(&fault_reason, EVT_CONFIRMATION_FAILED);
                 k_sem_give(&synced_evt_sem);
                 return;
             }
             return;
         }
 
-        atomic_set(&fault_reason, NO_FAULT);
+        atomic_set(&fault_reason, EVT_NO_FAULT);
         k_sem_give(&synced_evt_sem);
 
     } else if (buf) {
@@ -398,10 +413,13 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
             unconfirmed_ticks += 1;
         } else {
             unconfirmed_ticks = 0;
+            sync_callbacks.recv = NULL;
+            atomic_set(&fault_reason, EVT_GOT_ACK);
+            k_sem_give(&synced_evt_sem);
         }
 
         if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
-            atomic_set(&fault_reason, DIDNT_RECEIVE_ACK);
+            atomic_set(&fault_reason, EVT_DIDNT_RECEIVE_ACK);
             k_sem_give(&synced_evt_sem);
             return;
         }
@@ -439,15 +457,14 @@ static state_t init() {
 #ifdef CONFIG_INTERACTIVE
     init_led(led);
 #endif
-
-    init_bufs();
+    init_buf_cb();
 
     selected_slot.subevent = 0;
 
     err = bt_enable(NULL);
     if (err) {
         LOG_ERR(INFO "Bluetooth init failed (err %d)", err);
-        atomic_set(&fault_reason, BLE_ENABLE_FAILED);
+        atomic_set(&fault_reason, EVT_BLE_ENABLE_FAILED);
         return FAULT_HANDLING;
     }
 
@@ -464,7 +481,7 @@ static state_t syncing() {
 
     if (err) {
         LOG_ERR(INFO "Failed to start scanning for sync %d", err);
-        atomic_set(&fault_reason, BLE_SCAN_START_FAILED);
+        atomic_set(&fault_reason, EVT_BLE_SCAN_START_FAILED);
         return FAULT_HANDLING;
     }
 
@@ -493,7 +510,8 @@ static state_t registering() {
 
     sync_callbacks.recv = &register_recv_cb;
     k_sem_take(&register_evt_sem, K_FOREVER);
-    k_sleep(K_SECONDS(10));
+    // Fix this here
+    k_sleep(K_SECONDS(1));
 
     bt_le_per_adv_sync_get_info(default_sync, &info);
 
@@ -516,8 +534,8 @@ static state_t registering() {
     }
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
-    fault_t curr = atomic_get(&fault_reason);
-    if (curr != BLE_SYNC_DELETED)
+    evt_t curr = atomic_get(&fault_reason);
+    if (curr != EVT_BLE_SYNC_DELETED)
         return FAULT_HANDLING;
     return CONFIRMING;
 }
@@ -528,37 +546,71 @@ static state_t confirming() {
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
     k_sem_reset(&synced_evt_sem);
-    if (atomic_get(&fault_reason) == CONFIRMATION_FAILED) {
+    if (atomic_get(&fault_reason) == EVT_CONFIRMATION_FAILED) {
         return REGISTERING;
     }
-    return SYNCED;
+    data_generator_init(&generator_config);
+    return SLEEPING;
 }
 
-static state_t synced() {
-    sync_callbacks.recv = &ack_recv_cb;
-    unconfirmed_ticks = 0;
+static state_t sleeping() {
+    bt_le_per_adv_sync_recv_disable(default_sync);
+    state_t ret = FAULT_HANDLING;
 
     for (;;) {
         if (k_sem_take(&synced_evt_sem, K_SECONDS(30))) {
             LOG_INF(INFO "Still alive");
             continue;
         }
-        fault_t curr = atomic_get(&fault_reason);
+        evt_t curr = atomic_get(&fault_reason);
 
         k_sem_init(&synced_evt_sem, 0, 1);
         switch (curr) {
-        case NO_FAULT:
+        case EVT_NO_FAULT:
             continue;
-        case BLE_SYNC_TIMEOUT:
-            return SYNCING;
+        case EVT_BLE_SYNC_TIMEOUT:
+            ret = SYNCING;
+            goto ret_generator_stop;
+        case EVT_DATA_GENERATED:
+            ret = ENABLED;
+            goto ret_default;
         default:
-            return FAULT_HANDLING;
+            goto ret_generator_stop;
         }
     }
-    return NUM_STATES;
+ret_generator_stop:
+    data_generator_stop();
+ret_default:
+    return ret;
 }
 
-static void init_bufs() {
+static state_t enabled() {
+    sync_callbacks.recv = &ack_recv_cb;
+    unconfirmed_ticks = 0;
+    bt_le_per_adv_sync_recv_enable(default_sync);
+    k_sem_take(&synced_evt_sem, K_FOREVER);
+    k_sem_reset(&synced_evt_sem);
+    switch (atomic_get(&fault_reason)) {
+    case EVT_GOT_ACK:
+        LOG_INF(INFO "Got ACK");
+        bt_le_per_adv_sync_recv_disable(default_sync);
+        return SLEEPING;
+    case EVT_DIDNT_RECEIVE_ACK:
+        LOG_INF(INFO "Failed to receive ACK in %d events, reregistering",
+                unconfirmed_ticks);
+        return REGISTERING;
+    default:
+        return FAULT_HANDLING;
+    }
+}
+
+static void data_generated_cb() {
+    atomic_set(&fault_reason, EVT_DATA_GENERATED);
+    k_sem_give(&synced_evt_sem);
+    return;
+}
+
+static void init_buf_cb() {
     net_buf_simple_add_mem(&scanner_rsp_buf, &rsp_data_i, sizeof(rsp_data_t));
 }
 
@@ -572,8 +624,10 @@ static char *state_str(state_t s) {
         return "FAULT_HANDLING";
     case SYNCING:
         return "SYNCING";
-    case SYNCED:
-        return "SYNCED";
+    case SLEEPING:
+        return "SLEEPING";
+    case ENABLED:
+        return "ENABLED";
     case REGISTERING:
         return "REGISTERING";
     case CONFIRMING:

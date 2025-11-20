@@ -7,3 +7,11 @@
 
 rsource "drivers/Kconfig"
 rsource "lib/Kconfig"
+
+
+config BLOCK_TIME
+    int "Time in seconds each block should take"
+    default 10
+    help
+        For reference with 2020 article related to PAwR this was the time
+        interval at which the data was updated.
