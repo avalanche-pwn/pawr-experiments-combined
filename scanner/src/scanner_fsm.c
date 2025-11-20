@@ -599,6 +599,8 @@ static state_t enabled() {
         LOG_INF(INFO "Failed to receive ACK in %d events, reregistering",
                 unconfirmed_ticks);
         return REGISTERING;
+    case EVT_BLE_SYNC_TIMEOUT:
+        return SYNCING;
     default:
         return FAULT_HANDLING;
     }
