@@ -290,21 +290,22 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
 
         recv_ack_data = net_buf_simple_pull_mem(buf, buf->len);
 
+        err = set_rsp_data(sync, info);
+        if (err) {
+            LOG_WRN(INFO "Failed to send response (err %d)", err);
+        }
+
         if (recv_ack_data[selected_slot.rsp_slot - reg_data_count].ack_id !=
             CONFIG_SCANNER_ID) {
             LOG_WRN("Failed to confirm reservation");
             unconfirmed_ticks += 1;
-        }
 
-        if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
-            atomic_set(&fault_reason, CONFIRMATION_FAILED);
-            k_sem_give(&synced_evt_sem);
+            if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
+                atomic_set(&fault_reason, CONFIRMATION_FAILED);
+                k_sem_give(&synced_evt_sem);
+                return;
+            }
             return;
-        }
-
-        err = set_rsp_data(sync, info);
-        if (err) {
-            LOG_WRN(INFO "Failed to send response (err %d)", err);
         }
 
         atomic_set(&fault_reason, NO_FAULT);
@@ -458,6 +459,7 @@ static state_t init() {
 
 static state_t syncing() {
     int err;
+    sync_callbacks.recv = &register_recv_cb;
 
     bt_le_per_adv_sync_cb_register(&sync_callbacks);
     err = bt_le_scan_start(&scan_param, NULL);
@@ -491,6 +493,7 @@ static state_t registering() {
     struct bt_le_per_adv_sync *sync;
     int err;
 
+    sync_callbacks.recv = &register_recv_cb;
     k_sem_take(&register_evt_sem, K_FOREVER);
     k_sleep(K_SECONDS(10));
 
@@ -527,7 +530,7 @@ static state_t confirming() {
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
     k_sem_reset(&synced_evt_sem);
-    if (atomic_get(fault_reason) == CONFIRMATION_FAILED) {
+    if (atomic_get(&fault_reason) == CONFIRMATION_FAILED) {
         return REGISTERING;
     }
     return SYNCED;
