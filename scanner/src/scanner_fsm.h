@@ -16,12 +16,12 @@
 #include <zephyr/random/random.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/net_buf.h>
 
 #include <zephyr/drivers/gpio.h>
 
 #include <app/lib/common.h>
 #include <app/lib/transfer.h>
-#include <app/lib/crypto.h>
 
 #ifdef CONFIG_INTERACTIVE
 #include <app/lib/interactive.h>

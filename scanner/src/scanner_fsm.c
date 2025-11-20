@@ -1,6 +1,4 @@
 #include "scanner_fsm.h"
-#include "app/lib/transfer.h"
-#include "zephyr/net_buf.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
