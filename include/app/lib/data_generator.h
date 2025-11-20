@@ -17,6 +17,7 @@
 typedef struct {
     struct net_buf_simple *data;
     int interval;
+    void (*init_buf)();
     void (*generated)();
 } data_generator_config_t;
 

@@ -20,7 +20,11 @@ static void generate_data(struct k_timer *timer){
     uint8_t data[config_p->data->len];
     sys_rand_get(&data, config_p->data->len);
     net_buf_simple_reset(config_p->data);
-    net_buf_simple_push_mem(config_p->data, &data, config_p->data->len);
+
+    if (config_p->init_buf)
+        config_p->init_buf();
+
+    net_buf_simple_add_mem(config_p->data, &data, config_p->data->len);
 
     if (config_p->generated)
         config_p->generated();
