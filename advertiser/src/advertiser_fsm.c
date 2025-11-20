@@ -69,8 +69,8 @@ static const struct bt_data ad[] = {
 };
 
 static struct bt_le_per_adv_param per_adv_params = {
-    .interval_min = 8000,
-    .interval_max = 8000,
+    .interval_min = 800,
+    .interval_max = 800,
     .options = 0,
     .num_subevents = MAX_NUM_SUBEVENTS,
     .subevent_interval = 0x40,
@@ -105,7 +105,7 @@ static void request_cb(struct bt_le_ext_adv *adv,
         for (size_t j = subevent_start; j < NUM_RSP_SLOTS; j++) {
             slot_data_t *s = &rsp_slots[subevent][j];
             s->inactive_for++;
-            if (s->dev_id != 0 && s->inactive_for > 3) {
+            if (s->dev_id != 0 && s->inactive_for > 3 * CONFIG_BLOCK_TIME) {
                 LOG_INF(INFO "Device with id %d, disconnected", s->dev_id);
                 s->dev_id = 0;
                 s->inactive_for = 0;
@@ -143,7 +143,7 @@ static void response_cb(struct bt_le_ext_adv *adv,
     if (buf) {
         LOG_INF(INFO "Response: subevent %d, slot %d", info->subevent,
                 info->response_slot);
-        if (buf->len != sizeof(rsp_data_t)) {
+        if (buf->len < sizeof(rsp_data_t)) {
             LOG_WRN(INFO "Invalid data format");
             return;
         }
