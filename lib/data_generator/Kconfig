@@ -1,0 +1,4 @@
+config DATA_GENERATOR
+	bool "Support for data_generator lib"
+	help
+        Enables data_generator lib

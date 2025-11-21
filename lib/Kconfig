@@ -4,5 +4,6 @@
 menu "Custom libraries"
 
 rsource "interactive/Kconfig"
+rsource "data_generator/Kconfig"
 
 endmenu
