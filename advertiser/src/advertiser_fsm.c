@@ -1,4 +1,5 @@
 #include "advertiser_fsm.h"
+#include "app/lib/transfer.h"
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
 #define INFO "[INFO] "
@@ -89,6 +90,7 @@ static void request_cb(struct bt_le_ext_adv *adv,
                        const struct bt_le_per_adv_data_request *request) {
     int err;
     uint8_t to_send;
+    ack_data_t d;
 
     to_send = MIN(request->count, ARRAY_SIZE(subevent_data_params));
 
@@ -116,7 +118,13 @@ static void request_cb(struct bt_le_ext_adv *adv,
                     // TODO handle this
                 }
             }
-            ack_data_t d = {.ack_id = s->dev_id};
+            if (s->inactive_for == 1) {
+                // There was data in prev slot, return ack
+                d = (ack_data_t){.ack_id = s->dev_id};
+            } else {
+                // There wasn't any data in prev slot return nack
+                d = (ack_data_t){.ack_id = 0};
+            }
             net_buf_simple_add_mem(&bufs[subevent], &d, sizeof(d));
         }
         subevent_data_params[i].subevent =
