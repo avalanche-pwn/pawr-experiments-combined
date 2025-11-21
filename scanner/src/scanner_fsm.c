@@ -409,13 +409,15 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
 
         if (recv_ack_data[selected_slot.rsp_slot - reg_data_count].ack_id !=
             CONFIG_SCANNER_ID) {
-            LOG_WRN("Didn't receive ack");
+            if (unconfirmed_ticks != 0)
+                LOG_WRN("Didn't receive ack");
             unconfirmed_ticks += 1;
         } else {
             unconfirmed_ticks = 0;
             sync_callbacks.recv = NULL;
             atomic_set(&fault_reason, EVT_GOT_ACK);
             k_sem_give(&synced_evt_sem);
+            return;
         }
 
         if (unconfirmed_ticks >= CONFIG_MAX_UNCONFIRMED_TICKS) {
