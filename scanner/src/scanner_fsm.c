@@ -1,6 +1,4 @@
 #include "scanner_fsm.h"
-#include "app/lib/data_generator.h"
-#include "zephyr/bluetooth/bluetooth.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
@@ -204,6 +202,11 @@ static data_generator_config_t generator_config = {
     .generated = &data_generated_cb,
 };
 
+static const psa_key_id_t advertiser_key_id =
+    PSA_KEY_ID_USER_MIN + CONFIG_ADVERTISER_KEY_ID_OFFSET;
+static const psa_key_id_t scanner_key_id =
+    advertiser_key_id + CONFIG_SCANNER_MIN_KEY_ID;
+
 #ifdef CONFIG_INTERACTIVE
 // When building for boards we use the led defined here
 // to indicate that this board is a sensor
@@ -259,6 +262,8 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                              const struct bt_le_per_adv_sync_recv_info *info,
                              struct net_buf_simple *buf) {
     register_data_t *recv_data;
+    subevent_sign_t *signature;
+    CRYPTO_MAC_BUF_DEFINE(comp);
     int err;
 
     if (buf && buf->len) {
@@ -269,6 +274,18 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
         // TODO this probably can cause read over the net bufs len
         // If a malicious device sends shorter buf the pull length might be over
         // it's size
+        LOG_HEXDUMP_INF(buf->data, buf->len, "TEST");
+        signature = net_buf_simple_remove_mem(buf, sizeof(subevent_sign_t));
+        psa_status_t psa_err =
+            crypto_compute_mac(advertiser_key_id, buf,
+                               buf->len + sizeof(signature->counter), &comp);
+        if (psa_err != PSA_SUCCESS) {
+            LOG_WRN(INFO "Couldn't compute mac");
+        }
+        if (memcmp(comp.data, signature->hmac, MAC_LEN) != 0)
+            LOG_WRN(INFO "Couldn't verify mac %d", signature->counter);
+
+        LOG_HEXDUMP_INF(buf->data, buf->len, "TEST");
         recv_data = net_buf_simple_pull_mem(buf, sizeof(register_data_t) *
                                                      sel_info.num_reg_slots);
         memcpy(&selected_slot, &recv_data[selected_slot.rsp_slot],
@@ -460,6 +477,11 @@ static state_t init() {
     init_led(led);
 #endif
     init_buf_cb();
+
+    if (crypto_init() != PSA_SUCCESS) {
+        LOG_WRN("FAILED TO INIT PSA");
+        return FAULT_HANDLING;
+    }
 
     selected_slot.subevent = 0;
 
