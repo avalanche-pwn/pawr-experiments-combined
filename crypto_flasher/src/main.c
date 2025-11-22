@@ -55,7 +55,7 @@ int main() {
         goto ret_fail;
 
     net_buf_simple_init_with_data(
-        &key_buf, keys[min_scanner_key_id + CONFIG_FLASHED_DEVICE], MAC_LEN);
+        &key_buf, keys[CONFIG_FLASHED_DEVICE], MAC_LEN);
     err = recreate_key(min_scanner_key_id, key_buf);
     if (err != PSA_SUCCESS)
         goto ret_fail;
