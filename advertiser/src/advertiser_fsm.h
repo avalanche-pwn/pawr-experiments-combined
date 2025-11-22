@@ -22,6 +22,7 @@
 
 #include <app/lib/common.h>
 #include <app/lib/transfer.h>
+#include <app/lib/crypto.h>
 
 #include "advertiser_fsm.h"
 #include "free_list.h"

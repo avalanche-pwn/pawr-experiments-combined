@@ -1,5 +1,5 @@
 #include "advertiser_fsm.h"
-#include "app/lib/transfer.h"
+
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
 #define INFO "[INFO] "
@@ -23,6 +23,9 @@ static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf);
 
+static const psa_key_id_t advertiser_key_id = PSA_KEY_ID_USER_MIN;
+static const psa_storage_uid_t counter_uid = advertiser_key_id + 1;
+
 static state_t init();
 static state_t advertising();
 static state_t fault_handling();
@@ -42,7 +45,6 @@ state_func_t *const states[NUM_STATES] = {[INITIALIZE] = &init,
 K_MUTEX_DEFINE(reserve_mutex);
 static register_data_t last_used = {.subevent = 0,
                                     .rsp_slot = CONFIG_NUM_REGISTER_SLOTS};
-
 
 register_data_t register_subevent_data[CONFIG_NUM_REGISTER_SLOTS];
 
@@ -69,6 +71,9 @@ static const struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, &selection_data, sizeof(selection_data)),
 };
 
+// crypto
+static crypto_counter_t counter = {.storage_uid = counter_uid};
+
 static struct bt_le_per_adv_param per_adv_params = {
     .interval_min = 800,
     .interval_max = 800,
@@ -80,7 +85,6 @@ static struct bt_le_per_adv_param per_adv_params = {
     .num_response_slots = NUM_RSP_SLOTS,
 };
 
-
 static const struct bt_le_ext_adv_cb adv_cb = {
     .pawr_data_request = request_cb,
     .pawr_response = response_cb,
@@ -91,6 +95,8 @@ static void request_cb(struct bt_le_ext_adv *adv,
     int err;
     uint8_t to_send;
     ack_data_t d;
+    subevent_sign_t *signature;
+    CRYPTO_MAC_BUF_DEFINE(mac);
 
     to_send = MIN(request->count, ARRAY_SIZE(subevent_data_params));
 
@@ -126,13 +132,22 @@ static void request_cb(struct bt_le_ext_adv *adv,
                 d = (ack_data_t){.ack_id = 0};
             }
             net_buf_simple_add_mem(&bufs[subevent], &d, sizeof(d));
+
         }
+        size_t hashable_len = bufs[subevent].len;
+
+        signature = net_buf_simple_add(&bufs[subevent], sizeof(*signature));
+        signature->counter = counter.value;
+
+        net_buf_simple_init_with_data(&mac, signature->hmac, MAC_LEN);
+        crypto_compute_mac(advertiser_key_id, bufs[subevent], hashable_len,
+                           mac);
         subevent_data_params[i].subevent =
             (request->start + i) % per_adv_params.num_subevents;
         subevent_data_params[i].response_slot_start = 0;
         subevent_data_params[i].response_slot_count = NUM_RSP_SLOTS;
         subevent_data_params[i].data = &bufs[subevent];
-        LOG_INF("asdf %d", bufs[subevent].len);
+        LOG_INF("asdf %d", MAC_LEN);
     }
 
     err = bt_le_per_adv_set_subevent_data(adv, to_send, subevent_data_params);
@@ -203,6 +218,9 @@ static state_t init() {
 #endif // CONFIG_INTERACTIVE
     init_bufs();
 
+    crypto_init();
+    crypto_secure_counter_init(&counter);
+
     err = bt_enable(NULL);
     if (err) {
         LOG_ERR(INFO "Bluetooth init failed (err %d)", err);
@@ -258,6 +276,7 @@ static state_t advertising() {
 }
 
 static state_t fault_handling() {
+    crypto_secure_counter_commit(&counter);
     LOG_ERR(INFO "Received a fault rebooting");
     sys_reboot(SYS_REBOOT_COLD);
 }
