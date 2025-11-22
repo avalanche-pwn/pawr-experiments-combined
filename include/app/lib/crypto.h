@@ -35,7 +35,7 @@ psa_status_t crypto_init();
  * \return 0 on success, negative error code otherwise
  */
 psa_status_t crypto_save_persistent_key(psa_key_id_t persistent_id,
-                               struct net_buf_simple key);
+                               struct net_buf_simple *key);
 /**
  * \brief Compute HMAC value and store it in mac_out
  * \param key_id Id of the key to use
@@ -44,8 +44,8 @@ psa_status_t crypto_save_persistent_key(psa_key_id_t persistent_id,
  *
  * \return 0 on success, error code otherwise
  */
-psa_status_t crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple input,
-                       size_t hashable_len, struct net_buf_simple mac_out);
+psa_status_t crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple *input,
+                       size_t hashable_len, struct net_buf_simple *mac_out);
 
 typedef struct {
     uint64_t value;

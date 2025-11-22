@@ -5,7 +5,7 @@ inline psa_status_t crypto_init() {
 }
 
 psa_status_t crypto_save_persistent_key(psa_key_id_t persistent_id,
-                               struct net_buf_simple key) {
+                               struct net_buf_simple *key) {
     psa_key_id_t ret_id;
     psa_key_attributes_t attributes;
 
@@ -16,15 +16,15 @@ psa_status_t crypto_save_persistent_key(psa_key_id_t persistent_id,
     psa_set_key_usage_flags(&attributes, KEY_FLAGS);
     psa_set_key_algorithm(&attributes, HMAC_SHA_256);
 
-    return psa_import_key(&attributes, key.data, key.len, &ret_id);
+    return psa_import_key(&attributes, key->data, key->len, &ret_id);
 }
 
-int crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple input,
-                       size_t hashable_len, struct net_buf_simple mac_out) {
+int crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple *input,
+                       size_t hashable_len, struct net_buf_simple *mac_out) {
     size_t out_len;
-    uint8_t *mac_data = net_buf_simple_add(&mac_out, MAC_LEN);
+    uint8_t *mac_data = net_buf_simple_add(mac_out, MAC_LEN);
 
-    return psa_mac_compute(key_id, HMAC_SHA_256, input.data, hashable_len,
+    return psa_mac_compute(key_id, HMAC_SHA_256, input->data, hashable_len,
                           mac_data, MAC_LEN, &out_len);
 }
 
