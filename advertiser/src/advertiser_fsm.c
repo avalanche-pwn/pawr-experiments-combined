@@ -23,7 +23,8 @@ static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf);
 
-static const psa_key_id_t advertiser_key_id = PSA_KEY_ID_USER_MIN;
+static const psa_key_id_t advertiser_key_id =
+    PSA_KEY_ID_USER_MIN + CONFIG_ADVERTISER_KEY_ID_OFFSET;
 static const psa_storage_uid_t counter_uid = advertiser_key_id + 1;
 
 static state_t init();
@@ -48,9 +49,7 @@ static register_data_t last_used = {.subevent = 0,
 
 register_data_t register_subevent_data[CONFIG_NUM_REGISTER_SLOTS];
 
-#define TO_SEND_BUF_SIZE                                                       \
-    ((NUM_RSP_SLOTS) * 2 + sizeof(register_subevent_data)) +                   \
-        sizeof(ack_data_t) * (NUM_RSP_SLOTS)
+#define TO_SEND_BUF_SIZE 251
 
 static struct bt_le_per_adv_subevent_data_params
     subevent_data_params[MAX_NUM_SUBEVENTS];
@@ -96,7 +95,7 @@ static void request_cb(struct bt_le_ext_adv *adv,
     uint8_t to_send;
     ack_data_t d;
     subevent_sign_t *signature;
-    CRYPTO_MAC_BUF_DEFINE(mac);
+    struct net_buf_simple mac;
 
     to_send = MIN(request->count, ARRAY_SIZE(subevent_data_params));
 
@@ -132,7 +131,6 @@ static void request_cb(struct bt_le_ext_adv *adv,
                 d = (ack_data_t){.ack_id = 0};
             }
             net_buf_simple_add_mem(&bufs[subevent], &d, sizeof(d));
-
         }
         size_t hashable_len = bufs[subevent].len;
 
@@ -140,14 +138,14 @@ static void request_cb(struct bt_le_ext_adv *adv,
         signature->counter = counter.value;
 
         net_buf_simple_init_with_data(&mac, signature->hmac, MAC_LEN);
-        crypto_compute_mac(advertiser_key_id, bufs[subevent], hashable_len,
-                           mac);
+        net_buf_simple_reset(&mac);
+        crypto_compute_mac(advertiser_key_id, &bufs[subevent],
+                           hashable_len + sizeof(signature->counter), &mac);
         subevent_data_params[i].subevent =
             (request->start + i) % per_adv_params.num_subevents;
         subevent_data_params[i].response_slot_start = 0;
         subevent_data_params[i].response_slot_count = NUM_RSP_SLOTS;
         subevent_data_params[i].data = &bufs[subevent];
-        LOG_INF("asdf %d", MAC_LEN);
     }
 
     err = bt_le_per_adv_set_subevent_data(adv, to_send, subevent_data_params);
@@ -211,6 +209,7 @@ static void response_cb(struct bt_le_ext_adv *adv,
 
 static state_t init() {
     int err;
+    psa_status_t psa_err;
     k_sleep(K_SECONDS(5));
 
 #ifdef CONFIG_INTERACTIVE
@@ -218,8 +217,15 @@ static state_t init() {
 #endif // CONFIG_INTERACTIVE
     init_bufs();
 
-    crypto_init();
-    crypto_secure_counter_init(&counter);
+    psa_err = crypto_init();
+    if (psa_err != PSA_SUCCESS)
+        return FAULT_HANDLING;
+
+    psa_err = crypto_secure_counter_init(&counter);
+    if (psa_err != PSA_SUCCESS)
+        return FAULT_HANDLING;
+
+    LOG_INF(INFO "Starting advertiser, courrent counter %lld", counter.value);
 
     err = bt_enable(NULL);
     if (err) {
