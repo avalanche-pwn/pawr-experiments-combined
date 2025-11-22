@@ -22,7 +22,7 @@ config ADVERTISER_KEY_ID_OFFSET
 
 config SCANNER_MIN_KEY_ID
     int "ID of 1'st scanner"
-    default 1
+    default 2
     help
         ID of 1'st scanner, where other scanners will
         have consecutive Id's.
