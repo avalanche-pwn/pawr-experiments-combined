@@ -15,3 +15,14 @@ config BLOCK_TIME
     help
         For reference with 2020 article related to PAwR this was the time
         interval at which the data was updated.
+
+config ADVERTISER_KEY_ID_OFFSET
+    int "ID of the advertiser key in PSA crypto"
+    default 0
+
+config SCANNER_MIN_KEY_ID
+    int "ID of 1'st scanner"
+    default 1
+    help
+        ID of 1'st scanner, where other scanners will
+        have consecutive Id's.
