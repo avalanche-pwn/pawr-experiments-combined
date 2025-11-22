@@ -10,9 +10,37 @@
 #define HMAC_SHA_256 PSA_ALG_HMAC(PSA_ALG_SHA_256)
 #define HASH_LEN PSA_HASH_LENGTH(HMAC_SHA_256)
 #define KEY_BITS 256
-#define KEY_FLAGS PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_VERIFY_HASH
+#define KEY_FLAGS PSA_KEY_USAGE_SIGN_MESSAGE
+#define MAC_LEN PSA_MAC_LENGTH(PSA_KEY_TYPE_HMAC, KEY_BITS, HMAC_SHA_256)
 
+#define CRYPTO_KEY_DEFINE_STATIC(name)                                         \
+    NET_BUF_SIMPLE_DEFINE_STATIC(name, KEY_BITS / 8)
+#define CRYPTO_KEY_DEFINE(name) NET_BUF_SIMPLE_DEFINE(name, KEY_BITS / 8)
+#define CRYPTO_MAC_BUF_DEFINE(name) NET_BUF_SIMPLE_DEFINE(name, MAC_LEN)
+
+/**
+ * \brief Initialize PSA with psa_crypto_init
+ * \return 0 on success negative error on fail
+ */
 int crypto_init();
-int crypto_save_persistent_key(psa_key_id_t persistent_id, struct net_buf_simple key);
+/**
+ * \brief Saves persistent key.
+ * \param persistent_id Id with wich the key is saved
+ * \param key Should be a securely generated random data of len KEY_BITS
+ *
+ * \return 0 on success, negative error code otherwise
+ */
+int crypto_save_persistent_key(psa_key_id_t persistent_id,
+                               struct net_buf_simple key);
+/**
+ * \brief Compute HMAC value and store it in mac_out
+ * \param key_id Id of the key to use
+ * \param input input to hash
+ * \param mac_out Output net buf
+ *
+ * \return 0 on success, error code otherwise
+ */
+int crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple input,
+                       struct net_buf_simple mac_out);
 
 #endif // APP_LIB_CRYPTO_H
