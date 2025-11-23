@@ -2,7 +2,6 @@
 #define APP_LIB_CRYPTO_H
 
 #include <psa/crypto.h>
-#include <psa/internal_trusted_storage.h>
 
 #include <stdint.h>
 #include <zephyr/logging/log.h>
@@ -49,7 +48,7 @@ psa_status_t crypto_compute_mac(psa_key_id_t key_id, struct net_buf_simple *inpu
 
 typedef struct {
     uint64_t value;
-    psa_storage_uid_t storage_uid;
+    psa_key_id_t storage_uid;
 } crypto_counter_t;
 
 psa_status_t crypto_secure_counter_init(crypto_counter_t *ctx);
