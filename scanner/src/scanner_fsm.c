@@ -5,6 +5,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define INFO "[INFO] "
 
 #define SCALE_INTERVAL_TO_TIMEOUT(interval) (interval * 5 / 40)
+#define NUM_RSP_SLOTS 10
 
 /**
  * Enum for states of this fsm.
@@ -202,10 +203,7 @@ static data_generator_config_t generator_config = {
     .generated = &data_generated_cb,
 };
 
-static const psa_key_id_t advertiser_key_id =
-    PSA_KEY_ID_USER_MIN + CONFIG_ADVERTISER_KEY_ID_OFFSET;
-static const psa_key_id_t scanner_key_id =
-    advertiser_key_id + CONFIG_SCANNER_MIN_KEY_ID;
+static crypto_counter_t counter = {.storage_uid = COUNTER_ID};
 
 #ifdef CONFIG_INTERACTIVE
 // When building for boards we use the led defined here
@@ -258,39 +256,42 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
     k_sem_give(&synced_evt_sem);
 }
 
+NET_BUF_SIMPLE_DEFINE_STATIC(test, 251);
 static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                              const struct bt_le_per_adv_sync_recv_info *info,
                              struct net_buf_simple *buf) {
-    register_data_t *recv_data;
-    subevent_sign_t *signature;
-    CRYPTO_MAC_BUF_DEFINE(comp);
+    subevent_data_t subevent_data;
+    register_data_t reg_data[sel_info.num_reg_slots];
+    ack_data_t ack_data[NUM_RSP_SLOTS];
+
     int err;
+
+    subevent_data._register_data_count = sel_info.num_reg_slots;
+    subevent_data._ack_data_count = NUM_RSP_SLOTS;
+    subevent_data.register_data = reg_data;
+    subevent_data.ack_data = ack_data;
 
     if (buf && buf->len) {
         selected_slot.rsp_slot = sys_rand8_get() % sel_info.num_reg_slots;
 
-        err = set_rsp_data(sync, info);
-
-        // TODO this probably can cause read over the net bufs len
-        // If a malicious device sends shorter buf the pull length might be over
-        // it's size
-        LOG_HEXDUMP_INF(buf->data, buf->len, "TEST");
-        signature = net_buf_simple_remove_mem(buf, sizeof(subevent_sign_t));
-        psa_status_t psa_err =
-            crypto_compute_mac(advertiser_key_id, buf,
-                               buf->len + sizeof(signature->counter), &comp);
-        if (psa_err != PSA_SUCCESS) {
-            LOG_WRN(INFO "Couldn't compute mac");
+        
+        err = verify_message(buf, ADVERTISER_KEY_ID, counter.value);
+        if (err != 0) {
+            LOG_WRN(INFO "Failed to verify message");
         }
-        if (memcmp(comp.data, signature->hmac, MAC_LEN) != 0)
-            LOG_WRN(INFO "Couldn't verify mac %d", signature->counter);
 
-        LOG_HEXDUMP_INF(buf->data, buf->len, "TEST");
-        recv_data = net_buf_simple_pull_mem(buf, sizeof(register_data_t) *
-                                                     sel_info.num_reg_slots);
-        memcpy(&selected_slot, &recv_data[selected_slot.rsp_slot],
+        net_buf_simple_clone(buf, &test);
+        LOG_HEXDUMP_INF(test.data, test.len, "TEST");
+        err = subevent_data_with_reg_deserialize(&subevent_data, &test);
+        if (err) {
+            LOG_WRN(INFO "Failed to deserialize message");
+        }
+
+        memcpy(&selected_slot,
+               &subevent_data.register_data[selected_slot.rsp_slot],
                sizeof(selected_slot));
 
+        err = set_rsp_data(sync, info);
         if (err) {
             LOG_WRN(INFO "Failed to send response (err %d)", err);
         }
@@ -473,6 +474,7 @@ static int set_rsp_data(struct bt_le_per_adv_sync *sync,
 
 static state_t init() {
     int err;
+    psa_status_t psa_err;
 #ifdef CONFIG_INTERACTIVE
     init_led(led);
 #endif
@@ -482,6 +484,14 @@ static state_t init() {
         LOG_WRN("FAILED TO INIT PSA");
         return FAULT_HANDLING;
     }
+
+    if ((psa_err = crypto_secure_counter_init(&counter)) != PSA_SUCCESS) {
+        LOG_WRN("FAILED TO INIT SECURE COUNTER (err: %d)", psa_err);
+        return FAULT_HANDLING;
+    }
+
+    LOG_INF(INFO "Device with id %d initialised with counter %lld",
+            CONFIG_SCANNER_ID, counter.value);
 
     selected_slot.subevent = 0;
 

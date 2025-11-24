@@ -1,10 +1,11 @@
 #!/bin/env bash
 
-FILES=`find . -type f -name compile_commands.json`
+set -e
+if [ -e compile_commands.json ]; then
+    echo "hERE"
+    rm compile_commands.json
+fi
 
-for file in $FILES; do
-    if [[ "$file" == *"build"* ]]; then
-        ln -s $file compile_commands.json
-        echo "Created symlink compile-commands.json => $file"
-    fi;
-done;
+FILES=`find . -type f -name compile_commands.json`
+jq -s add $FILES > ./compile_commands.json
+echo "$FILES got merged into ./compile_commands.json"

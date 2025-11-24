@@ -23,10 +23,6 @@ static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf);
 
-static const psa_key_id_t advertiser_key_id =
-    PSA_KEY_ID_USER_MIN + CONFIG_ADVERTISER_KEY_ID_OFFSET;
-static const psa_storage_uid_t counter_uid = advertiser_key_id + 1;
-
 static state_t init();
 static state_t advertising();
 static state_t fault_handling();
@@ -71,15 +67,15 @@ static const struct bt_data ad[] = {
 };
 
 // crypto
-static crypto_counter_t counter = {.storage_uid = counter_uid};
+static crypto_counter_t counter = {.storage_uid = COUNTER_ID};
 
 static struct bt_le_per_adv_param per_adv_params = {
     .interval_min = 800,
     .interval_max = 800,
     .options = 0,
     .num_subevents = MAX_NUM_SUBEVENTS,
-    .subevent_interval = 0x40,
-    .response_slot_delay = 0x30,
+    .subevent_interval = 0x70,
+    .response_slot_delay = 0x60,
     .response_slot_spacing = 0x2, // Needs to be at least 2
     .num_response_slots = NUM_RSP_SLOTS,
 };
@@ -94,19 +90,20 @@ static void request_cb(struct bt_le_ext_adv *adv,
     int err;
     uint8_t to_send;
     ack_data_t d;
-    subevent_sign_t *signature;
     struct net_buf_simple mac;
+    subevent_data_t subevent_data;
+    ack_data_t ack_data[NUM_RSP_SLOTS] = {0};
+
+    subevent_data._register_data_count = CONFIG_NUM_REGISTER_SLOTS;
+    subevent_data._ack_data_count = NUM_RSP_SLOTS;
+    subevent_data.register_data = register_subevent_data;
+    subevent_data.ack_data = ack_data;
 
     to_send = MIN(request->count, ARRAY_SIZE(subevent_data_params));
 
     for (size_t i = 0; i < to_send; i++) {
         size_t subevent = (request->start + i) % per_adv_params.num_subevents;
         // Ignore register slots while adding to free list
-        net_buf_simple_reset(&bufs[subevent]);
-        if (subevent == 0) {
-            populate_reg(&bufs[subevent]);
-        }
-        LOG_INF("StART %d", request->start);
 
         size_t subevent_start = (subevent == 0) ? CONFIG_NUM_REGISTER_SLOTS : 0;
         for (size_t j = subevent_start; j < NUM_RSP_SLOTS; j++) {
@@ -130,17 +127,14 @@ static void request_cb(struct bt_le_ext_adv *adv,
                 // There wasn't any data in prev slot return nack
                 d = (ack_data_t){.ack_id = 0};
             }
-            net_buf_simple_add_mem(&bufs[subevent], &d, sizeof(d));
+            ack_data[j] = d;
         }
-        size_t hashable_len = bufs[subevent].len;
+        subevent_data.counter = counter.value;
 
-        signature = net_buf_simple_add(&bufs[subevent], sizeof(*signature));
-        signature->counter = counter.value;
-
-        net_buf_simple_init_with_data(&mac, signature->hmac, MAC_LEN);
-        net_buf_simple_reset(&mac);
-        crypto_compute_mac(advertiser_key_id, &bufs[subevent],
-                           hashable_len + sizeof(signature->counter), &mac);
+        net_buf_simple_reset(&bufs[subevent]);
+        subevent_data_with_reg_serialize(&subevent_data, &bufs[subevent]);
+        sign_message(&bufs[subevent], ADVERTISER_KEY_ID);
+        
         subevent_data_params[i].subevent =
             (request->start + i) % per_adv_params.num_subevents;
         subevent_data_params[i].response_slot_start = 0;
@@ -328,13 +322,6 @@ void init_bufs(void) {
     for (size_t i = 0; i < MAX_NUM_SUBEVENTS; i++) {
         net_buf_simple_init_with_data(&bufs[i], &backing_store[i],
                                       TO_SEND_BUF_SIZE);
-    }
-}
-
-static void populate_reg(struct net_buf_simple *buf) {
-    for (size_t i = 0; i < CONFIG_NUM_REGISTER_SLOTS; i++) {
-        net_buf_simple_add_mem(buf, &register_subevent_data[i],
-                               sizeof(register_subevent_data[i]));
     }
 }
 
