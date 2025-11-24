@@ -3,3 +3,4 @@
 add_subdirectory_ifdef(CONFIG_INTERACTIVE interactive)
 add_subdirectory_ifdef(CONFIG_DATA_GENERATOR data_generator)
 add_subdirectory(crypto)
+add_subdirectory(transfer)
