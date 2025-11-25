@@ -72,7 +72,7 @@ typedef enum {
 transfer_error_t sign_message(struct net_buf_simple *serialized,
                               psa_key_id_t key_id);
 transfer_error_t verify_message(struct net_buf_simple *message,
-                                psa_key_id_t key_id, uint64_t counter);
+                                psa_key_id_t key_id, uint64_t *counter);
 
 SERIALIZER_DECLARE(advertisment_data_serialize, advertisment_data_t);
 SERIALIZER_DECLARE(subevent_data_with_reg_serialize, subevent_data_t);

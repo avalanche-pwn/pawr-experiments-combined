@@ -22,7 +22,7 @@ transfer_error_t sign_message(struct net_buf_simple *serialized,
 }
 
 transfer_error_t verify_message(struct net_buf_simple *message,
-                                psa_key_id_t key_id, uint64_t counter) {
+                                psa_key_id_t key_id, uint64_t *counter) {
     psa_status_t err;
     transfer_error_t transfer_err;
     struct net_buf_simple hmac;
@@ -47,8 +47,11 @@ transfer_error_t verify_message(struct net_buf_simple *message,
         return transfer_err;
     }
 
-    if (remote_counter < counter)
+    if (remote_counter < *counter)
         return TRANSFER_COUNTER_DIDNT_MATCH;
+
+    if (remote_counter > *counter)
+        *counter = remote_counter;
 
     return TRANSFER_NO_ERROR;
 }
