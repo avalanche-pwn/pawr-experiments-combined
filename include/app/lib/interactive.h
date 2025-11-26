@@ -33,6 +33,7 @@
  * @retval CONFIG_CUSTOM_GET_VALUE_DEFAULT if @p val is zero
  */
 int init_led(struct gpio_dt_spec led);
+int init_button(void (*cb)(const struct device *dev, struct gpio_callback *cb));
 
 /** @} */
 

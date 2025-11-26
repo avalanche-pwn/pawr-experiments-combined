@@ -14,7 +14,13 @@ typedef struct {
     uint8_t inactive_for;
 } slot_data_t;
 
-typedef enum { INITIALIZE, ADVERTISING, FAULT_HANDLING, NUM_STATES } state_t;
+typedef enum {
+    INITIALIZE,
+    ADVERTISING,
+    FAULT_HANDLING,
+    SOFT_REBOOT,
+    NUM_STATES
+} state_t;
 typedef state_t state_func_t();
 
 static void request_cb(struct bt_le_ext_adv *adv,
@@ -23,12 +29,18 @@ static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf);
 
+static void button_cb(const struct device *dev, struct gpio_callback *cb,
+                      uint32_t pins);
+
 static state_t init();
 static state_t advertising();
 static state_t fault_handling();
+static state_t soft_reboot();
 
 static const char *state_str(state_t s);
 static state_t run_state();
+
+K_SEM_DEFINE(reboot_sem, 0, 1);
 
 static register_data_t reserve_slot();
 void init_bufs(void);
@@ -37,7 +49,8 @@ static void populate_reg(struct net_buf_simple *buf);
 static state_t curr_state = INITIALIZE;
 state_func_t *const states[NUM_STATES] = {[INITIALIZE] = &init,
                                           [ADVERTISING] = &advertising,
-                                          [FAULT_HANDLING] = &fault_handling};
+                                          [FAULT_HANDLING] = &fault_handling,
+                                          [SOFT_REBOOT] = &soft_reboot};
 
 K_MUTEX_DEFINE(reserve_mutex);
 static register_data_t last_used = {.subevent = 0,
@@ -86,6 +99,11 @@ static const struct bt_le_ext_adv_cb adv_cb = {
 };
 
 static uint8_t subevent_req_counter = 0;
+
+void button_cb(const struct device *dev, struct gpio_callback *cb,
+               uint32_t pins) {
+    k_sem_give(&reboot_sem);
+}
 
 static void request_cb(struct bt_le_ext_adv *adv,
                        const struct bt_le_per_adv_data_request *request) {
@@ -237,6 +255,7 @@ static state_t init() {
 
 #ifdef CONFIG_INTERACTIVE
     init_led(master_led);
+    init_button(&button_cb);
 #endif // CONFIG_INTERACTIVE
     init_bufs();
 
@@ -297,16 +316,21 @@ static state_t init() {
 }
 
 static state_t advertising() {
-    while (true) {
-        k_sleep(K_SECONDS(10));
+    while (k_sem_take(&reboot_sem, K_SECONDS(10)) != 0) {
         LOG_INF(INFO "Still alive");
     }
-    return NUM_STATES;
+    return SOFT_REBOOT;
 }
 
 static state_t fault_handling() {
     crypto_secure_counter_commit(&counter);
     LOG_ERR(INFO "Received a fault rebooting");
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
+static state_t soft_reboot() {
+    LOG_INF("Reboot requested, saving counter and rebooting");
+    crypto_secure_counter_commit(&counter);
     sys_reboot(SYS_REBOOT_COLD);
 }
 
@@ -316,6 +340,8 @@ static const char *state_str(state_t s) {
         return "INITIALIZE";
     case ADVERTISING:
         return "ADVERTISING";
+    case SOFT_REBOOT:
+        return "SOFT_REBOOT";
     default:
         return "INVALID_STATE";
     }
