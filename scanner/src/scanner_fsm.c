@@ -637,6 +637,9 @@ static state_t confirming() {
             return REGISTERING;
         case EVT_INVALID_HASH:
             return SYNCING;
+        case EVT_BLE_SYNC_DELETED:
+        case EVT_BLE_SYNC_TIMEOUT:
+            return SYNCING;
     }
     data_generator_init(&generator_config);
     return SLEEPING;
