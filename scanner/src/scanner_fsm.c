@@ -148,6 +148,7 @@ static register_data_t selected_slot;
  * Current ble sync object.
  */
 static struct bt_le_per_adv_sync *default_sync;
+static uint16_t sync_interval;
 
 /**
  * Netbuf for responses from scanner
@@ -413,6 +414,7 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
     sync_create_param.timeout =
         SCALE_INTERVAL_TO_TIMEOUT(info->interval) * CONFIG_NUM_FAILED_SYNC;
     LOG_INF(INFO "Establisehd sync interval %d", info->interval);
+    sync_interval = info->interval;
 
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
 
@@ -606,6 +608,7 @@ static state_t registering() {
         SCALE_INTERVAL_TO_TIMEOUT(info.interval) * CONFIG_NUM_FAILED_SYNC;
 
     LOG_INF(INFO "Establisehd sync interval %d", info.interval);
+    sync_interval = info.interval;
 
     bt_le_per_adv_sync_delete(default_sync);
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
@@ -627,7 +630,7 @@ static state_t registering() {
 
 static state_t confirming() {
     unconfirmed_ticks = 0;
-    k_sleep(K_SECONDS(1));
+    k_sleep(K_MSEC(sync_interval * 1.25));
     sync_callbacks.recv = &confirm_recv_cb;
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
