@@ -75,8 +75,8 @@ static struct bt_le_per_adv_param per_adv_params = {
     .options = 0,
     .num_subevents = MAX_NUM_SUBEVENTS,
     .subevent_interval = 0x70,
-    .response_slot_delay = 0x60,
-    .response_slot_spacing = 0x2, // Needs to be at least 2
+    .response_slot_delay = 0x30,
+    .response_slot_spacing = 0xB, // Needs to be at least 2
     .num_response_slots = NUM_RSP_SLOTS,
 };
 
@@ -106,6 +106,8 @@ static void request_cb(struct bt_le_ext_adv *adv,
 
     for (size_t i = 0; i < to_send; i++) {
         size_t subevent = (request->start + i) % per_adv_params.num_subevents;
+        if (subevent == 0)
+            counter.value++;
         // Ignore register slots while adding to free list
 
         subevent_start = 0;
@@ -155,37 +157,52 @@ static void request_cb(struct bt_le_ext_adv *adv,
     if (err) {
         LOG_WRN(INFO "Failed to set subevent data (err %d)", err);
     }
-    if (subevent_req_counter == MAX_NUM_SUBEVENTS) {
-        counter.value += 1;
-        subevent_req_counter = 0;
-    }
 }
 
+NET_BUF_SIMPLE_DEFINE_STATIC(test, 251);
 static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf) {
+    transfer_error_t transfer_err;
+    response_data_t response;
+    struct net_buf_simple_state parse_state;
     if (buf) {
         LOG_INF(INFO "Response: subevent %d, slot %d", info->subevent,
                 info->response_slot);
-        if (buf->len < sizeof(rsp_data_t)) {
-            LOG_WRN(INFO "Invalid data format");
+
+        slot_data_t *slot = &rsp_slots[info->subevent][info->response_slot];
+
+        LOG_INF("%d", buf->len);
+        net_buf_simple_save(buf, &parse_state);
+        size_t to_save = HASH_LEN + sizeof(counter.value);
+        if (buf->len < to_save) {
+            LOG_WRN("message to short");
+            return;
+        }
+        net_buf_simple_remove_mem(buf, to_save);
+
+        transfer_err = response_data_deserialize(&response, buf);
+        if (transfer_err) {
+            LOG_WRN("Couldn't deserialize data");
+            return;
+        }
+        current_rsp = response.rsp_metadata;
+
+        net_buf_simple_restore(buf, &parse_state);
+        LOG_HEXDUMP_INF(buf->data, 8, "DUPA");
+        transfer_err =
+            verify_message(buf, MIN_SCANNER_KEY_ID + current_rsp.sender_id - 1,
+                           &counter.value);
+        if (transfer_err) {
+            LOG_WRN("FAILED to verify device, id: %d, err: %d",
+                    current_rsp.sender_id, transfer_err);
+            slot->dev_id = 0;
+            register_data_t rd = (register_data_t){
+                .subevent = info->subevent, .rsp_slot = info->response_slot};
+            free_list_append(rd);
             return;
         }
 
-        memcpy(&current_rsp, buf->data, buf->len);
-
-        // if (info->subevent == 0 &&
-        //     info->response_slot < CONFIG_NUM_REGISTER_SLOTS) {
-        //     // registering new device
-        //     register_data_t d = register_subevent_data[info->response_slot];
-
-        //     rsp_slots[d.subevent][d.rsp_slot].dev_id = current_rsp.sender_id;
-        //     rsp_slots[d.subevent][d.rsp_slot].inactive_for = 0;
-        //     LOG_INF(INFO "New device, %d %d", d.subevent, d.rsp_slot);
-
-        //     register_subevent_data[info->response_slot] = reserve_slot();
-        // }
-        slot_data_t *slot = &rsp_slots[info->subevent][info->response_slot];
         if (slot->dev_id == 0) {
             // slot is empty -> register new device
             LOG_INF(INFO "New device registerd id: %d", current_rsp.sender_id);
@@ -196,7 +213,8 @@ static void response_cb(struct bt_le_ext_adv *adv,
                 if (info->subevent == register_subevent_data[i].subevent &&
                     info->response_slot == register_subevent_data[i].rsp_slot) {
                     register_subevent_data[i] = reserve_slot();
-                    LOG_INF("%d %d", register_subevent_data[i].subevent, register_subevent_data[i].rsp_slot);
+                    LOG_INF("%d %d", register_subevent_data[i].subevent,
+                            register_subevent_data[i].rsp_slot);
                     break;
                 }
             }

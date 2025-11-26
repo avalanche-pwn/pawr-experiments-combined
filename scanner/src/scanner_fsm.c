@@ -101,12 +101,11 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
  * bt_le_per_adv_set_response_data.
  */
 static int set_rsp_data(struct bt_le_per_adv_sync *sync,
-                        const struct bt_le_per_adv_sync_recv_info *info);
+                        const struct bt_le_per_adv_sync_recv_info *info, response_data_t *resp);
 
 /**
  * Initialise response buffer with data
  */
-static void init_buf_cb();
 static void data_generated_cb();
 
 static state_t init();
@@ -153,7 +152,9 @@ static struct bt_le_per_adv_sync *default_sync;
 /**
  * Netbuf for responses from scanner
  */
-NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, sizeof(rsp_data_t) + 10);
+NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, 251);
+NET_BUF_SIMPLE_DEFINE_STATIC(random, UNUSED_DATA_LEN);
+static response_data_t response;
 
 /**
  * Parameters for scanning for ext adv packets.
@@ -198,9 +199,9 @@ static struct bt_le_scan_cb scan_callbacks = {
 };
 
 static data_generator_config_t generator_config = {
-    .data = &scanner_rsp_buf,
+    .data = &random,
     .interval = CONFIG_BLOCK_TIME,
-    .init_buf = &init_buf_cb,
+    .init_buf = NULL,
     .generated = &data_generated_cb,
 };
 
@@ -295,10 +296,6 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                &subevent_data.register_data[selected_slot.rsp_slot],
                sizeof(selected_slot));
 
-        // err = set_rsp_data(sync, info);
-        // if (err) {
-        //     LOG_WRN(INFO "Failed to send response (err %d)", err);
-        // }
         k_sem_give(&register_evt_sem);
     } else if (buf) {
         LOG_WRN(INFO "Received empty indication: subevent %d", info->subevent);
@@ -322,6 +319,10 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
     subevent_data.register_data = reg_data;
     subevent_data.ack_data = ack_data;
 
+    response_data_t resp;
+    resp.rsp_metadata = rsp_data_i;
+    resp.data_len = 0;
+
     if (buf && buf->len) {
         if (selected_slot.subevent == 0) {
             subevent_data._register_data_count = sel_info.num_reg_slots;
@@ -335,6 +336,9 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
             return;
         }
 
+        resp.counter = counter.value;
+
+        LOG_INF("Test %lld", counter.value);
         err = subevent_data_with_reg_deserialize(&subevent_data, buf);
         if (err) {
             LOG_WRN(INFO "Failed to deserialize message");
@@ -342,7 +346,7 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
 
         if (err != 0 || subevent_data.ack_data[selected_slot.rsp_slot].ack_id !=
             CONFIG_SCANNER_ID) {
-            err = set_rsp_data(sync, info);
+            err = set_rsp_data(sync, info, &resp);
             if (err) {
                 LOG_WRN(INFO "Failed to send response (err %d)", err);
             }
@@ -479,7 +483,8 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
             return;
         }
 
-        err = set_rsp_data(sync, info);
+        response.counter = counter.value;
+        err = set_rsp_data(sync, info, &response);
         if (err) {
             LOG_WRN(INFO "Failed to send response (err %d)", err);
         }
@@ -492,7 +497,7 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
 }
 
 static int set_rsp_data(struct bt_le_per_adv_sync *sync,
-                        const struct bt_le_per_adv_sync_recv_info *info) {
+                        const struct bt_le_per_adv_sync_recv_info *info, response_data_t *resp) {
     static struct bt_le_per_adv_response_params rsp_params;
 
     rsp_params.request_event = info->periodic_event_counter;
@@ -501,10 +506,16 @@ static int set_rsp_data(struct bt_le_per_adv_sync *sync,
     rsp_params.response_subevent = info->subevent;
     rsp_params.response_slot = selected_slot.rsp_slot;
 
-    LOG_INF(INFO "Indication: subevent %d, responding in slot %d",
-            info->subevent, selected_slot.rsp_slot);
+    net_buf_simple_reset(&scanner_rsp_buf);
+    response_data_serialize(resp, &scanner_rsp_buf);
+    sign_message(&scanner_rsp_buf, MIN_SCANNER_KEY_ID);
 
-    return bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
+    LOG_INF(INFO "Indication: subevent %d, responding in slot %d, len: %d",
+            info->subevent, selected_slot.rsp_slot, scanner_rsp_buf.len);
+
+    int ret =  bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
+    counter.value++;
+    return ret;
 }
 
 static state_t init() {
@@ -513,7 +524,6 @@ static state_t init() {
 #ifdef CONFIG_INTERACTIVE
     init_led(led);
 #endif
-    init_buf_cb();
 
     if (crypto_init() != PSA_SUCCESS) {
         LOG_WRN("FAILED TO INIT PSA");
@@ -580,8 +590,11 @@ static state_t registering() {
     sync_callbacks.recv = &register_recv_cb;
     k_sem_take(&register_evt_sem, K_FOREVER);
     k_sem_reset(&register_evt_sem);
-    if (atomic_get(&fault_reason) == EVT_INVALID_HASH)
+    if (atomic_get(&fault_reason) == EVT_INVALID_HASH) {
+        sync_callbacks.recv = NULL;
+        bt_le_per_adv_sync_delete(default_sync);
         return SYNCING;
+    }
 
     bt_le_per_adv_sync_get_info(default_sync, &info);
 
@@ -658,6 +671,7 @@ static state_t sleeping() {
 ret_generator_stop:
     data_generator_stop();
 ret_default:
+    sync_callbacks.recv = NULL;
     return ret;
 }
 
@@ -685,13 +699,13 @@ static state_t enabled() {
 }
 
 static void data_generated_cb() {
+    response.rsp_metadata = rsp_data_i;
+    response.data = random.data;
+    response.data_len = UNUSED_DATA_LEN;
+
     atomic_set(&fault_reason, EVT_DATA_GENERATED);
     k_sem_give(&synced_evt_sem);
     return;
-}
-
-static void init_buf_cb() {
-    net_buf_simple_add_mem(&scanner_rsp_buf, &rsp_data_i, sizeof(rsp_data_t));
 }
 
 static state_t run_state() { return states[curr_state](); }
