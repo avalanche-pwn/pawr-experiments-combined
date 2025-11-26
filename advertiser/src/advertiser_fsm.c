@@ -190,7 +190,6 @@ static void response_cb(struct bt_le_ext_adv *adv,
 
         slot_data_t *slot = &rsp_slots[info->subevent][info->response_slot];
 
-        LOG_INF("%d", buf->len);
         net_buf_simple_save(buf, &parse_state);
         size_t to_save = HASH_LEN + sizeof(counter.value);
         if (buf->len < to_save) {
@@ -207,7 +206,6 @@ static void response_cb(struct bt_le_ext_adv *adv,
         current_rsp = response.rsp_metadata;
 
         net_buf_simple_restore(buf, &parse_state);
-        LOG_HEXDUMP_INF(buf->data, 8, "DUPA");
         transfer_err =
             verify_message(buf, MIN_SCANNER_KEY_ID + current_rsp.sender_id - 1,
                            &counter.value);
@@ -223,7 +221,8 @@ static void response_cb(struct bt_le_ext_adv *adv,
 
         if (slot->dev_id == 0) {
             // slot is empty -> register new device
-            LOG_INF(INFO "New device registerd id: %d", current_rsp.sender_id);
+            LOG_INF(INFO "New device registerd id: %d, sub: %d, slot: %d",
+                    current_rsp.sender_id, info->subevent, info->response_slot);
             slot->dev_id = current_rsp.sender_id;
             slot->inactive_for = 0;
 
@@ -231,8 +230,6 @@ static void response_cb(struct bt_le_ext_adv *adv,
                 if (info->subevent == register_subevent_data[i].subevent &&
                     info->response_slot == register_subevent_data[i].rsp_slot) {
                     register_subevent_data[i] = reserve_slot();
-                    LOG_INF("%d %d", register_subevent_data[i].subevent,
-                            register_subevent_data[i].rsp_slot);
                     break;
                 }
             }
