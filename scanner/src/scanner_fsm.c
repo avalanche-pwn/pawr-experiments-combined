@@ -101,7 +101,8 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
  * bt_le_per_adv_set_response_data.
  */
 static int set_rsp_data(struct bt_le_per_adv_sync *sync,
-                        const struct bt_le_per_adv_sync_recv_info *info, response_data_t *resp);
+                        const struct bt_le_per_adv_sync_recv_info *info,
+                        response_data_t *resp);
 
 /**
  * Initialise response buffer with data
@@ -263,20 +264,17 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                              const struct bt_le_per_adv_sync_recv_info *info,
                              struct net_buf_simple *buf) {
     subevent_data_t subevent_data;
-    register_data_t reg_data[sel_info.num_reg_slots];
     ack_data_t ack_data[NUM_RSP_SLOTS];
 
     int err;
 
-    subevent_data._register_data_count = sel_info.num_reg_slots;
+    subevent_data._register_data_count = 0;
     subevent_data._ack_data_count = NUM_RSP_SLOTS;
-    subevent_data.register_data = reg_data;
     subevent_data.ack_data = ack_data;
 
     sync_callbacks.recv = NULL;
 
     if (buf && buf->len) {
-        selected_slot.rsp_slot = sys_rand8_get() % sel_info.num_reg_slots;
 
         err = verify_message(buf, ADVERTISER_KEY_ID, &counter.value);
         if (err != 0) {
@@ -291,11 +289,6 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
             LOG_WRN(INFO "Failed to deserialize message");
             return;
         }
-
-        LOG_INF("%d", selected_slot.rsp_slot);
-        memcpy(&selected_slot,
-               &subevent_data.register_data[selected_slot.rsp_slot],
-               sizeof(selected_slot));
 
         k_sem_give(&register_evt_sem);
     } else if (buf) {
@@ -325,10 +318,6 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
     resp.data_len = 0;
 
     if (buf && buf->len) {
-        if (selected_slot.subevent == 0) {
-            subevent_data._register_data_count = sel_info.num_reg_slots;
-        }
-
         err = verify_message(buf, ADVERTISER_KEY_ID, &counter.value);
         if (err != 0) {
             LOG_WRN(INFO "Failed to verify message");
@@ -346,7 +335,7 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
         }
 
         if (err != 0 || subevent_data.ack_data[selected_slot.rsp_slot].ack_id !=
-            CONFIG_SCANNER_ID) {
+                            CONFIG_SCANNER_ID) {
             err = set_rsp_data(sync, info, &resp);
             if (err) {
                 LOG_WRN(INFO "Failed to send response (err %d)", err);
@@ -374,12 +363,38 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
     }
 }
 
+static bool parse_adv_data(struct bt_data *data, void *user_data) {
+    ARG_UNUSED(user_data);
+    transfer_error_t err;
+
+    NET_BUF_SIMPLE_DEFINE(adv_data_buf, data->data_len);
+    advertisement_data_t adv_data;
+
+    if (data->type != BT_DATA_MANUFACTURER_DATA)
+        return true;
+
+    net_buf_simple_add_mem(&adv_data_buf, data->data, data->data_len);
+    err = verify_message(&adv_data_buf, ADVERTISER_KEY_ID, &counter.value);
+    if (err != 0) {
+        LOG_WRN("Couldn't verify signature on adv (err: %d)", err);
+        *(int *)user_data = err;
+        return false;
+    }
+    advertisement_data_deserialize(&adv_data, &adv_data_buf);
+
+    sel_info = adv_data.selection_info;
+    selected_slot.rsp_slot = sys_rand8_get() % sel_info.num_reg_slots;
+
+    selected_slot = adv_data.reg_data[selected_slot.rsp_slot];
+    return false;
+}
+
 static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
                          struct net_buf_simple *buf) {
     char addr_str[BT_ADDR_LE_STR_LEN];
     struct bt_le_per_adv_sync_param sync_create_param;
     struct bt_le_per_adv_sync *sync;
-    int err;
+    int err = 0;
 
     if (!info || !info->addr) {
         return;
@@ -394,16 +409,9 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
         // Extended ADV without SyncInfo - keep scanning
         return;
     }
-    uint8_t read = 0;
-    excepted_data_t data_desc;
-    while (buf->len - read > sizeof(data_desc)) {
-        memcpy(&data_desc, buf->data + read, sizeof(data_desc));
-        if (data_desc.len > 0 && data_desc.flags == BT_DATA_MANUFACTURER_DATA) {
-            memcpy(&sel_info, buf->data + read + sizeof(data_desc),
-                   data_desc.len - 1);
-        }
-        read += data_desc.len + 1;
-    }
+    bt_data_parse(buf, &parse_adv_data, &err);
+    if (err)
+        return;
 
     bt_addr_le_to_str(info->addr, addr_str, sizeof(addr_str));
 
@@ -418,12 +426,12 @@ static void scan_recv_cb(const struct bt_le_scan_recv_info *info,
 
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
 
-    default_sync = sync;
-
     if (err) {
         LOG_WRN(INFO "Failed to create sync to %s (err %d)", addr_str, err);
         return;
     }
+
+    default_sync = sync;
 
     LOG_INF(INFO "Creating sync to %s (SID=%u)...", addr_str, info->sid);
     err = bt_le_scan_stop();
@@ -452,10 +460,6 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
     subevent_data.ack_data = ack_data;
 
     if (buf && buf->len) {
-        if (selected_slot.subevent == 0) {
-            subevent_data._register_data_count = sel_info.num_reg_slots;
-        }
-
         err = verify_message(buf, ADVERTISER_KEY_ID, &counter.value);
         if (err != 0) {
             LOG_WRN("Failed to verify hash");
@@ -499,7 +503,8 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
 }
 
 static int set_rsp_data(struct bt_le_per_adv_sync *sync,
-                        const struct bt_le_per_adv_sync_recv_info *info, response_data_t *resp) {
+                        const struct bt_le_per_adv_sync_recv_info *info,
+                        response_data_t *resp) {
     static struct bt_le_per_adv_response_params rsp_params;
 
     rsp_params.request_event = info->periodic_event_counter;
@@ -515,7 +520,8 @@ static int set_rsp_data(struct bt_le_per_adv_sync *sync,
     LOG_INF(INFO "Indication: subevent %d, responding in slot %d, len: %d",
             info->subevent, selected_slot.rsp_slot, scanner_rsp_buf.len);
 
-    int ret =  bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
+    int ret =
+        bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
     counter.value++;
     return ret;
 }
@@ -557,6 +563,11 @@ static state_t syncing() {
     int err;
     // sync_callbacks.recv = &register_recv_cb;
 
+    if (default_sync) {
+        bt_le_per_adv_sync_delete(default_sync);
+        default_sync = NULL;
+    }
+
     bt_le_per_adv_sync_cb_register(&sync_callbacks);
     err = bt_le_scan_start(&scan_param, NULL);
 
@@ -573,7 +584,8 @@ static state_t syncing() {
         }
         break;
     }
-    return REGISTERING;
+    k_sem_reset(&synced_sem);
+    return CONFIRMING;
 }
 
 static state_t handle_fault() {
@@ -613,13 +625,13 @@ static state_t registering() {
     bt_le_per_adv_sync_delete(default_sync);
     err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
 
-    default_sync = sync;
-
     if (err) {
         LOG_WRN(INFO "Failed to recreate sync (err: %d)", err);
         // Wait for a while so that buffer get's flushed
         return FAULT_HANDLING;
     }
+
+    default_sync = sync;
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
     evt_t curr = atomic_get(&fault_reason);
@@ -636,13 +648,12 @@ static state_t confirming() {
     k_sem_take(&synced_evt_sem, K_FOREVER);
     k_sem_reset(&synced_evt_sem);
     switch (atomic_get(&fault_reason)) {
-        case EVT_CONFIRMATION_FAILED:
-            return REGISTERING;
-        case EVT_INVALID_HASH:
-            return SYNCING;
-        case EVT_BLE_SYNC_DELETED:
-        case EVT_BLE_SYNC_TIMEOUT:
-            return SYNCING;
+    case EVT_INVALID_HASH:
+    case EVT_CONFIRMATION_FAILED:
+    case EVT_BLE_SYNC_DELETED:
+    case EVT_BLE_SYNC_TIMEOUT:
+        sync_callbacks.recv = NULL;
+        return SYNCING;
     }
     data_generator_init(&generator_config);
     return SLEEPING;
@@ -695,7 +706,6 @@ static state_t enabled() {
     case EVT_DIDNT_RECEIVE_ACK:
         LOG_INF(INFO "Failed to receive ACK in %d events, reregistering",
                 unconfirmed_ticks);
-        return REGISTERING;
     case EVT_INVALID_HASH:
     case EVT_BLE_SYNC_TIMEOUT:
         return SYNCING;

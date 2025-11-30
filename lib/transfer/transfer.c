@@ -56,7 +56,10 @@ transfer_error_t verify_message(struct net_buf_simple *message,
     return TRANSFER_NO_ERROR;
 }
 
-SERIALIZER_DEFINE(advertisment_data_serialize, advertisment_data_t) {
+SERIALIZER_DEFINE(advertisement_data_serialize, advertisement_data_t) {
+    for (size_t i = 0; i < data->selection_info.num_reg_slots; i++) {
+        register_data_serialize(&data->reg_data[i], result);
+    }
     net_buf_simple_add_u8(result, data->selection_info.num_reg_slots);
     counter_serialize(&data->counter, result);
 }
@@ -87,9 +90,14 @@ SERIALIZER_DEFINE(response_data_serialize, response_data_t) {
     counter_serialize(&data->counter, result);
 }
 
-DESERIALIZER_DEFINE(advertisement_data_deserialize, advertisment_data_t) {
+DESERIALIZER_DEFINE(advertisement_data_deserialize, advertisement_data_t) {
     DESERIALIZER_SIZE_GUARD(1);
     result->selection_info.num_reg_slots = net_buf_simple_remove_u8(data);
+
+    size_t reg_data_size = 2 * result->selection_info.num_reg_slots;
+
+    DESERIALIZER_SIZE_GUARD(reg_data_size);
+    result->reg_data = net_buf_simple_pull_mem(data, reg_data_size);
     return 0;
 }
 
@@ -111,7 +119,7 @@ DESERIALIZER_DEFINE(subevent_data_with_reg_deserialize, subevent_data_t) {
 DESERIALIZER_DEFINE(subevent_data_deserialize, subevent_data_t) {
     DESERIALIZER_SIZE_GUARD(2 * result->_ack_data_count);
     for (size_t i = result->_ack_data_count; i > 0; i--) {
-        result->ack_data[i-1].ack_id = net_buf_simple_remove_le16(data);
+        result->ack_data[i - 1].ack_id = net_buf_simple_remove_le16(data);
     }
     return 0;
 }

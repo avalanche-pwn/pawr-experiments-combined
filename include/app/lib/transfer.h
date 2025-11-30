@@ -43,9 +43,10 @@ typedef struct PACKED {
 } ack_data_t;
 
 typedef struct {
+    register_data_t *reg_data;
     subevent_sel_info_t selection_info;
     uint64_t counter;
-} advertisment_data_t;
+} advertisement_data_t;
 
 typedef struct {
     register_data_t *register_data;
@@ -75,12 +76,12 @@ transfer_error_t sign_message(struct net_buf_simple *serialized,
 transfer_error_t verify_message(struct net_buf_simple *message,
                                 psa_key_id_t key_id, uint64_t *counter);
 
-SERIALIZER_DECLARE(advertisment_data_serialize, advertisment_data_t);
+SERIALIZER_DECLARE(advertisement_data_serialize, advertisement_data_t);
 SERIALIZER_DECLARE(subevent_data_with_reg_serialize, subevent_data_t);
 SERIALIZER_DECLARE(subevent_data_serialize, subevent_data_t);
 SERIALIZER_DECLARE(response_data_serialize, response_data_t);
 
-DESERIALIZER_DECLARE(advertisement_data_deserialize, advertisment_data_t);
+DESERIALIZER_DECLARE(advertisement_data_deserialize, advertisement_data_t);
 DESERIALIZER_DECLARE(subevent_data_with_reg_deserialize, subevent_data_t);
 DESERIALIZER_DECLARE(subevent_data_deserialize, subevent_data_t);
 DESERIALIZER_DECLARE(response_data_deserialize, response_data_t);

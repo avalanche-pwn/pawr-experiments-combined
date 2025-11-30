@@ -29,8 +29,7 @@ static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf);
 
-static void button_cb(const struct device *dev, struct gpio_callback *cb,
-                      uint32_t pins);
+static void button_cb(const struct device *dev, struct gpio_callback *cb);
 
 static state_t init();
 static state_t advertising();
@@ -44,7 +43,7 @@ K_SEM_DEFINE(reboot_sem, 0, 1);
 
 static register_data_t reserve_slot();
 void init_bufs(void);
-static void populate_reg(struct net_buf_simple *buf);
+static int set_adv_data();
 
 static state_t curr_state = INITIALIZE;
 state_func_t *const states[NUM_STATES] = {[INITIALIZE] = &init,
@@ -73,11 +72,8 @@ static rsp_data_t current_rsp;
 static struct bt_le_ext_adv *pawr_adv;
 subevent_sel_info_t selection_data;
 
+NET_BUF_SIMPLE_DEFINE_STATIC(adv_data, sizeof(advertisement_data_t) + HASH_LEN);
 static uint8_t adv_flags = (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
-static const struct bt_data ad[] = {
-    BT_DATA(BT_DATA_FLAGS, &adv_flags, sizeof(adv_flags)),
-    BT_DATA(BT_DATA_MANUFACTURER_DATA, &selection_data, sizeof(selection_data)),
-};
 
 // crypto
 static crypto_counter_t counter = {.storage_uid = COUNTER_ID};
@@ -100,8 +96,7 @@ static const struct bt_le_ext_adv_cb adv_cb = {
 
 static uint8_t subevent_req_counter = 0;
 
-void button_cb(const struct device *dev, struct gpio_callback *cb,
-               uint32_t pins) {
+static void button_cb(const struct device *dev, struct gpio_callback *cb) {
     k_sem_give(&reboot_sem);
 }
 
@@ -110,10 +105,8 @@ static void request_cb(struct bt_le_ext_adv *adv,
     int err;
     uint8_t to_send;
     ack_data_t d;
-    struct net_buf_simple mac;
     subevent_data_t subevent_data;
     ack_data_t ack_data[NUM_RSP_SLOTS] = {0};
-    size_t subevent_start;
 
     subevent_data._register_data_count = 0;
     subevent_data._ack_data_count = NUM_RSP_SLOTS;
@@ -124,17 +117,14 @@ static void request_cb(struct bt_le_ext_adv *adv,
 
     for (size_t i = 0; i < to_send; i++) {
         size_t subevent = (request->start + i) % per_adv_params.num_subevents;
-        if (subevent == 0)
+        if (subevent == 0) {
             counter.value++;
+            if(set_adv_data() != 0)
+                LOG_ERR("Couldn't update adv data");
+        }
         // Ignore register slots while adding to free list
 
-        subevent_start = 0;
-        subevent_data._register_data_count = 0;
-        if (subevent == 0) {
-            subevent_start = CONFIG_NUM_REGISTER_SLOTS;
-            subevent_data._register_data_count = CONFIG_NUM_REGISTER_SLOTS;
-        }
-        for (size_t j = subevent_start; j < NUM_RSP_SLOTS; j++) {
+        for (size_t j = 0; j < NUM_RSP_SLOTS; j++) {
             slot_data_t *s = &rsp_slots[subevent][j];
             s->inactive_for++;
             if (s->dev_id != 0 && s->inactive_for > 3 * CONFIG_BLOCK_TIME) {
@@ -177,7 +167,6 @@ static void request_cb(struct bt_le_ext_adv *adv,
     }
 }
 
-NET_BUF_SIMPLE_DEFINE_STATIC(test, 251);
 static void response_cb(struct bt_le_ext_adv *adv,
                         struct bt_le_per_adv_response_info *info,
                         struct net_buf_simple *buf) {
@@ -233,6 +222,9 @@ static void response_cb(struct bt_le_ext_adv *adv,
                     break;
                 }
             }
+            if (set_adv_data() != 0) {
+                LOG_ERR("FAILED TO update adv data");
+            }
 
             return;
         } else if (slot->dev_id == current_rsp.sender_id) {
@@ -241,6 +233,21 @@ static void response_cb(struct bt_le_ext_adv *adv,
             return;
         }
     }
+}
+
+static int set_adv_data() {
+    advertisement_data_t to_advertise = {.reg_data = register_subevent_data,
+                                         .selection_info = selection_data,
+                                         .counter = counter.value};
+    net_buf_simple_reset(&adv_data);
+    advertisement_data_serialize(&to_advertise, &adv_data);
+    sign_message(&adv_data, ADVERTISER_KEY_ID);
+
+    const struct bt_data ad[] = {
+        BT_DATA(BT_DATA_FLAGS, &adv_flags, sizeof(adv_flags)),
+        BT_DATA(BT_DATA_MANUFACTURER_DATA, adv_data.data, adv_data.len),
+    };
+    return bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
 }
 
 // FSM definitions
@@ -289,7 +296,7 @@ static state_t init() {
 
     selection_data.num_reg_slots = CONFIG_NUM_REGISTER_SLOTS;
 
-    err = bt_le_ext_adv_set_data(pawr_adv, ad, ARRAY_SIZE(ad), NULL, 0);
+    err = set_adv_data();
     if (err) {
         LOG_ERR(INFO "Failed to set Extended ADV data (err %d)", err);
         return FAULT_HANDLING;
