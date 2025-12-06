@@ -3,12 +3,7 @@
 
 #include <app/lib/crypto.h>
 #include <app/lib/common.h>
-
-uint8_t keys[3][KEY_LEN] = {
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-};
+#include "keys.h"
 
 crypto_counter_t counter = {.storage_uid=COUNTER_ID};
 

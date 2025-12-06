@@ -4,3 +4,9 @@ west-commands:
       - name: export_compile_commands
         class: ExportCompileCommands
         help: an example west extension command
+
+  - file: scripts/key_mgr.py
+    commands:
+      - name: keymgr
+        class: KeyMgr
+        help: an example west extension command
