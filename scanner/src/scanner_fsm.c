@@ -1,11 +1,13 @@
 #include "scanner_fsm.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+
 #define FSM "[FSM] "
 #define INFO "[INFO] "
+#define STATS "[STATS] "
 
 #define SCALE_INTERVAL_TO_TIMEOUT(interval) (interval * 5 / 40)
-#define NUM_RSP_SLOTS 10
+#define NUM_RSP_SLOTS 103
 
 /**
  * Enum for states of this fsm.
@@ -70,7 +72,7 @@ static void register_recv_cb(struct bt_le_per_adv_sync *sync,
                              struct net_buf_simple *buf);
 /**
  * \brief Callback for receiving data from advertiser during confirmation state.
- * It excepts to receive proper ack, if it doesn't it should throw the scanner
+ * It excepts to receive proper ack, if it doesn't it should throw the message
  * back into registering mode. This could happen either because of interference
  * or other device taking the spot.
  */
@@ -152,9 +154,9 @@ static struct bt_le_per_adv_sync *default_sync;
 static uint16_t sync_interval;
 
 /**
- * Netbuf for responses from scanner
+ * Netbuf for responses from message
  */
-NET_BUF_SIMPLE_DEFINE_STATIC(scanner_rsp_buf, 251);
+NET_BUF_SIMPLE_DEFINE_STATIC(message_rsp_buf, 251);
 NET_BUF_SIMPLE_DEFINE_STATIC(random, UNUSED_DATA_LEN);
 static response_data_t response;
 
@@ -164,8 +166,8 @@ static response_data_t response;
 static const struct bt_le_scan_param scan_param = {
     .type = BT_HCI_LE_SCAN_ACTIVE,
     .options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
-    .interval = 0x00A0, // 100 ms
-    .window = 0x0050,   // 50 ms
+    .interval = 0x0140,
+    .window = 0x00A0,
 };
 
 K_SEM_DEFINE(synced_evt_sem, 0, 1);
@@ -175,7 +177,7 @@ K_SEM_DEFINE(synced_sem, 0, 1);
 /**
  * Data which we send to advertiser.
  */
-static const rsp_data_t rsp_data_i = {.sender_id = CONFIG_SCANNER_ID};
+static rsp_data_t rsp_data_i = {.sender_id = CONFIG_SCANNER_ID, .counter = 0};
 
 /**
  * \brief Number of consecutive uncofirmed responses in confirming state.
@@ -306,7 +308,7 @@ static void confirm_recv_cb(struct bt_le_per_adv_sync *sync,
     subevent_data_t subevent_data;
 
     register_data_t reg_data[sel_info.num_reg_slots];
-    ack_data_t ack_data[NUM_RSP_SLOTS];
+    ack_data_t ack_data[NUM_RSP_SLOTS] = {0};
 
     subevent_data._register_data_count = 0;
     subevent_data._ack_data_count = NUM_RSP_SLOTS;
@@ -473,10 +475,9 @@ static void ack_recv_cb(struct bt_le_per_adv_sync *sync,
         if (err != 0 || subevent_data.ack_data[selected_slot.rsp_slot].ack_id !=
                             CONFIG_SCANNER_ID) {
             if (unconfirmed_ticks != 0)
-                LOG_WRN("Didn't receive ack");
+                LOG_WRN("Didn't receive ack (err: %d", err);
             unconfirmed_ticks += 1;
         } else {
-            unconfirmed_ticks = 0;
             sync_callbacks.recv = NULL;
             atomic_set(&fault_reason, EVT_GOT_ACK);
             k_sem_give(&synced_evt_sem);
@@ -513,15 +514,15 @@ static int set_rsp_data(struct bt_le_per_adv_sync *sync,
     rsp_params.response_subevent = info->subevent;
     rsp_params.response_slot = selected_slot.rsp_slot;
 
-    net_buf_simple_reset(&scanner_rsp_buf);
-    response_data_serialize(resp, &scanner_rsp_buf);
-    sign_message(&scanner_rsp_buf, MIN_SCANNER_KEY_ID);
+    net_buf_simple_reset(&message_rsp_buf);
+    response_data_serialize(resp, &message_rsp_buf);
+    sign_message(&message_rsp_buf, MIN_SCANNER_KEY_ID);
 
     LOG_INF(INFO "Indication: subevent %d, responding in slot %d, len: %d",
-            info->subevent, selected_slot.rsp_slot, scanner_rsp_buf.len);
+            info->subevent, selected_slot.rsp_slot, message_rsp_buf.len);
 
     int ret =
-        bt_le_per_adv_set_response_data(sync, &rsp_params, &scanner_rsp_buf);
+        bt_le_per_adv_set_response_data(sync, &rsp_params, &message_rsp_buf);
     counter.value++;
     return ret;
 }
@@ -529,9 +530,11 @@ static int set_rsp_data(struct bt_le_per_adv_sync *sync,
 static state_t init() {
     int err;
     psa_status_t psa_err;
+    k_sleep(K_SECONDS(5));
 #ifdef CONFIG_INTERACTIVE
     init_led(led);
 #endif
+    LOG_INF("Device id: %d", CONFIG_SCANNER_ID);
 
     if (crypto_init() != PSA_SUCCESS) {
         LOG_WRN("FAILED TO INIT PSA");
@@ -647,13 +650,19 @@ static state_t confirming() {
 
     k_sem_take(&synced_evt_sem, K_FOREVER);
     k_sem_reset(&synced_evt_sem);
-    switch (atomic_get(&fault_reason)) {
+    evt_t reason = atomic_get(&fault_reason);
+    switch (reason) {
     case EVT_INVALID_HASH:
     case EVT_CONFIRMATION_FAILED:
     case EVT_BLE_SYNC_DELETED:
     case EVT_BLE_SYNC_TIMEOUT:
         sync_callbacks.recv = NULL;
         return SYNCING;
+    case EVT_NO_FAULT:
+        break;
+    default:
+        LOG_INF("Got unexcepted event %d", reason);
+        return FAULT_HANDLING;
     }
     data_generator_init(&generator_config);
     return SLEEPING;
@@ -693,28 +702,49 @@ ret_default:
 }
 
 static state_t enabled() {
+    state_t ret;
     sync_callbacks.recv = &ack_recv_cb;
     unconfirmed_ticks = 0;
     bt_le_per_adv_sync_recv_enable(default_sync);
     k_sem_take(&synced_evt_sem, K_FOREVER);
     k_sem_reset(&synced_evt_sem);
-    switch (atomic_get(&fault_reason)) {
+
+    int reason = atomic_get(&fault_reason);
+    switch (reason) {
     case EVT_GOT_ACK:
+        LOG_INF(STATS "%d, %d, %d", unconfirmed_ticks, true,
+                rsp_data_i.counter);
         LOG_INF(INFO "Got ACK");
         bt_le_per_adv_sync_recv_disable(default_sync);
-        return SLEEPING;
+        ret = SLEEPING;
+        goto ret_default;
     case EVT_DIDNT_RECEIVE_ACK:
+        LOG_INF(STATS "%d, %d, %d", unconfirmed_ticks, false,
+                rsp_data_i.counter);
         LOG_INF(INFO "Failed to receive ACK in %d events, reregistering",
                 unconfirmed_ticks);
     case EVT_INVALID_HASH:
     case EVT_BLE_SYNC_TIMEOUT:
-        return SYNCING;
+        LOG_INF(STATS "%d, %d, %d", unconfirmed_ticks, false,
+                rsp_data_i.counter);
+        ret = SYNCING;
+        goto ret_generator_stop;
+    case EVT_DATA_GENERATED:
+        LOG_INF(STATS "%d, %d, -1", unconfirmed_ticks, false);
+        ret = ENABLED;
+        goto ret_default;
     default:
-        return FAULT_HANDLING;
+        ret = FAULT_HANDLING;
+        goto ret_generator_stop;
     }
+ret_generator_stop:
+    data_generator_stop();
+ret_default:
+    return ret;
 }
 
 static void data_generated_cb() {
+    rsp_data_i.counter++;
     response.rsp_metadata = rsp_data_i;
     response.data = random.data;
     response.data_len = UNUSED_DATA_LEN;

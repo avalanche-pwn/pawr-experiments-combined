@@ -3,9 +3,12 @@
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define FSM "[FSM] "
 #define INFO "[INFO] "
+#define ACK "[ACK] "
+#define RECEIVED "[RECV] "
 
-#define NUM_RSP_SLOTS 10
-#define MAX_NUM_SUBEVENTS 5
+#define NUM_RSP_SLOTS 103
+#define MAX_NUM_SUBEVENTS 46
+#define EVENTS_PER_BLOCK 3
 #define PACKET_SIZE 5
 #define NAME_LEN 30
 
@@ -77,15 +80,14 @@ static uint8_t adv_flags = (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR);
 
 // crypto
 static crypto_counter_t counter = {.storage_uid = COUNTER_ID};
-
 static struct bt_le_per_adv_param per_adv_params = {
-    .interval_min = 800,
-    .interval_max = 800,
+    .interval_min = 2000,
+    .interval_max = 2000,
     .options = 0,
     .num_subevents = MAX_NUM_SUBEVENTS,
-    .subevent_interval = 0x70,
-    .response_slot_delay = 0x30,
-    .response_slot_spacing = 0xB, // Needs to be at least 2
+    .subevent_interval = 43,
+    .response_slot_delay = 0x1,
+    .response_slot_spacing = 0x4, // Needs to be at least 2
     .num_response_slots = NUM_RSP_SLOTS,
 };
 
@@ -100,6 +102,7 @@ static void button_cb(const struct device *dev, struct gpio_callback *cb) {
     k_sem_give(&reboot_sem);
 }
 
+static uint64_t rollover;
 static void request_cb(struct bt_le_ext_adv *adv,
                        const struct bt_le_per_adv_data_request *request) {
     int err;
@@ -107,6 +110,10 @@ static void request_cb(struct bt_le_ext_adv *adv,
     ack_data_t d;
     subevent_data_t subevent_data;
     ack_data_t ack_data[NUM_RSP_SLOTS] = {0};
+    if (rollover > 0) {
+        counter.value += rollover;
+        rollover = 0;
+    }
 
     subevent_data._register_data_count = 0;
     subevent_data._ack_data_count = NUM_RSP_SLOTS;
@@ -118,8 +125,8 @@ static void request_cb(struct bt_le_ext_adv *adv,
     for (size_t i = 0; i < to_send; i++) {
         size_t subevent = (request->start + i) % per_adv_params.num_subevents;
         if (subevent == 0) {
-            counter.value++;
-            if(set_adv_data() != 0)
+            rollover++;
+            if (set_adv_data() != 0)
                 LOG_ERR("Couldn't update adv data");
         }
         // Ignore register slots while adding to free list
@@ -127,7 +134,8 @@ static void request_cb(struct bt_le_ext_adv *adv,
         for (size_t j = 0; j < NUM_RSP_SLOTS; j++) {
             slot_data_t *s = &rsp_slots[subevent][j];
             s->inactive_for++;
-            if (s->dev_id != 0 && s->inactive_for > 3 * CONFIG_BLOCK_TIME) {
+            if (s->dev_id != 0 &&
+                s->inactive_for > 3 * EVENTS_PER_BLOCK) {
                 LOG_INF(INFO "Device with id %d, disconnected", s->dev_id);
                 s->dev_id = 0;
                 s->inactive_for = 0;
@@ -138,32 +146,32 @@ static void request_cb(struct bt_le_ext_adv *adv,
                     // TODO handle this
                 }
             }
-            if (s->inactive_for == 1) {
+            if (s->inactive_for == 1 && s->dev_id != 0) {
                 // There was data in prev slot, return ack
                 d = (ack_data_t){.ack_id = s->dev_id};
+                LOG_INF(ACK "1");
             } else {
                 // There wasn't any data in prev slot return nack
                 d = (ack_data_t){.ack_id = 0};
             }
             ack_data[j] = d;
         }
-        subevent_data.counter = counter.value;
+        subevent_data.counter = counter.value + rollover;
 
-        net_buf_simple_reset(&bufs[subevent]);
-        subevent_data_with_reg_serialize(&subevent_data, &bufs[subevent]);
-        sign_message(&bufs[subevent], ADVERTISER_KEY_ID);
+        net_buf_simple_reset(&bufs[i]);
+        subevent_data_with_reg_serialize(&subevent_data, &bufs[i]);
+        sign_message(&bufs[i], ADVERTISER_KEY_ID);
 
         subevent_data_params[i].subevent =
             (request->start + i) % per_adv_params.num_subevents;
         subevent_data_params[i].response_slot_start = 0;
         subevent_data_params[i].response_slot_count = NUM_RSP_SLOTS;
-        subevent_data_params[i].data = &bufs[subevent];
+        subevent_data_params[i].data = &bufs[i];
         subevent_req_counter += 1;
-    }
-
-    err = bt_le_per_adv_set_subevent_data(adv, to_send, subevent_data_params);
-    if (err) {
-        LOG_WRN(INFO "Failed to set subevent data (err %d)", err);
+        err = bt_le_per_adv_set_subevent_data(adv, 1, &subevent_data_params[i]);
+        if (err) {
+            LOG_WRN(INFO "Failed to set subevent data (err %d)", err);
+        }
     }
 }
 
@@ -207,6 +215,9 @@ static void response_cb(struct bt_le_ext_adv *adv,
             free_list_append(rd);
             return;
         }
+        if (set_adv_data() != 0) {
+            LOG_ERR("FAILED TO update adv data");
+        }
 
         if (slot->dev_id == 0) {
             // slot is empty -> register new device
@@ -230,6 +241,7 @@ static void response_cb(struct bt_le_ext_adv *adv,
         } else if (slot->dev_id == current_rsp.sender_id) {
             // Got response from excepted sender
             slot->inactive_for = 0;
+            LOG_INF(RECEIVED "%d, 1, %d, %d", slot->dev_id, info->rssi, current_rsp.counter);
             return;
         }
     }
@@ -262,6 +274,7 @@ static state_t init() {
     init_button(&button_cb);
 #endif // CONFIG_INTERACTIVE
     init_bufs();
+    LOG_INF("Device id: 0");
 
     psa_err = crypto_init();
     if (psa_err != PSA_SUCCESS)

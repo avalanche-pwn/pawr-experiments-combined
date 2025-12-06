@@ -84,6 +84,7 @@ SERIALIZER_DEFINE(subevent_data_serialize, subevent_data_t) {
 
 SERIALIZER_DEFINE(response_data_serialize, response_data_t) {
     net_buf_simple_add_le16(result, data->rsp_metadata.sender_id);
+    net_buf_simple_add_le32(result, data->rsp_metadata.counter);
     net_buf_simple_add_mem(result, data->data, data->data_len);
     net_buf_simple_add_u8(result, data->data_len);
 
@@ -128,9 +129,10 @@ DESERIALIZER_DEFINE(response_data_deserialize, response_data_t) {
     DESERIALIZER_SIZE_GUARD(1);
     result->data_len = net_buf_simple_remove_u8(data);
 
-    DESERIALIZER_SIZE_GUARD(result->data_len + 2);
+    DESERIALIZER_SIZE_GUARD(result->data_len + 2 + 4);
     result->data = net_buf_simple_remove_mem(data, result->data_len);
-
+    
+    result->rsp_metadata.counter = net_buf_simple_remove_le32(data);
     result->rsp_metadata.sender_id = net_buf_simple_remove_le16(data);
     return 0;
 }

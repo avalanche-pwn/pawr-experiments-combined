@@ -16,7 +16,7 @@ source "subsys/logging/Kconfig.template.log_config"
 
 config NUM_FAILED_SYNC
 	int "Number of failed's sync before resyncing"
-    default 3
+    default 6
 	help
         After NUM_FAILED_SYNCs elapses the scanner will re enable ble scanning,
         to sync with ext advertising.

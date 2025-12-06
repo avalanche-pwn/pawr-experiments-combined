@@ -4,7 +4,6 @@
 #include <psa/crypto.h>
 
 #include <stdint.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/net_buf.h>
 #include <zephyr/psa/key_ids.h>
 

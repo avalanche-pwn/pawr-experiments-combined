@@ -7,7 +7,7 @@
 
 #define PACKED __attribute__((__packed__))
 
-#define UNUSED_DATA_LEN 244 - HASH_LEN - sizeof(uint64_t) - sizeof(rsp_data_t) - sizeof(uint8_t)
+#define UNUSED_DATA_LEN 62 - HASH_LEN - sizeof(uint64_t) - sizeof(rsp_data_t) - sizeof(uint8_t) - sizeof(uint32_t)
 
 #define SERIALIZER_DECLARE(name, type)                                         \
     void name(type *data, struct net_buf_simple *result);
@@ -29,6 +29,7 @@ typedef struct PACKED {
 
 typedef struct PACKED {
     uint16_t sender_id;
+    uint32_t counter;
 } rsp_data_t;
 
 typedef enum PACKED { REGISTER_DATA, ACK_DATA } data_t;
