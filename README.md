@@ -1,137 +1,159 @@
-# nRF Connect SDK example application
+# PAwR experiments
 
-<a href="https://github.com/nrfconnect/ncs-example-application/actions/workflows/build-using-docker.yml?query=branch%3Amain">
-  <img src="https://github.com/nrfconnect/ncs-example-application/actions/workflows/build-using-docker.yml/badge.svg?event=push">
-</a>
-<a href="https://github.com/nrfconnect/ncs-example-application/actions/workflows/docs.yml?query=branch%3Amain">
-  <img src="https://github.com/nrfconnect/ncs-example-application/actions/workflows/docs.yml/badge.svg?event=push">
-</a>
-<a href="https://nrfconnect.github.io/ncs-example-application">
-  <img alt="Documentation" src="https://img.shields.io/badge/documentation-3D578C?logo=sphinx&logoColor=white">
-</a>
-<a href="https://nrfconnect.github.io/ncs-example-application/doxygen">
-  <img alt="API Documentation" src="https://img.shields.io/badge/API-documentation-3D578C?logo=c&logoColor=white">
-</a>
+This repository containse a one to many system based on PAwR protocol
+introduced in BLE 5.4. It is meant to be run on nrf54l15-dk.
 
-This repository contains an nRF Connect SDK example application. The main
-purpose of this repository is to serve as a reference on how to structure nRF Connect
-SDK based applications. Some of the features demonstrated in this example are:
+To show the advantage of PAwR over previously available advertiser based
+one to many system response slots where used for ACK. Additionaly authorisation
+is performed using HMAC-SHA256 and counters.
 
-- Basic [Zephyr application][app_dev] skeleton
-- [Zephyr workspace applications][workspace_app]
-- [Zephyr modules][modules]
-- [West T2 topology][west_t2]
-- [Custom boards][board_porting]
-- Custom [devicetree bindings][bindings]
-- Out-of-tree [drivers][drivers]
-- Out-of-tree libraries
-- Example CI configuration (using GitHub Actions)
-- Custom [west extension][west_ext]
-- Custom [Zephyr runner][runner_ext]
-- Doxygen and Sphinx documentation boilerplate
 
-This repository is versioned together with the [nRF Connect SDK main tree][sdk-nrf]. This
-means that every time that nRF Connect SDK is tagged, this repository is tagged as well
-with the same version number, and the [manifest](west.yml) entry for `zephyr`
-will point to the corresponding nRF Connect SDK tag. For example, the `ncs-example-application`
-v2.5.0 will point to nRF Connect SDK v2.5.0. Note that the `main` branch always
-points to the development branch of nRF Connect SDK, also `main`.
+The project is composed out of 3 parts:
+- advertiser - BLE advertiser
+- scanner - BLE scanner
+- crypto_flasher - a binary intended for flashing cryptografic keys on to the devices.
 
-[app_dev]: https://docs.zephyrproject.org/latest/develop/application/index.html
-[workspace_app]: https://docs.zephyrproject.org/latest/develop/application/index.html#zephyr-workspace-app
-[modules]: https://docs.zephyrproject.org/latest/develop/modules.html
-[west_t2]: https://docs.zephyrproject.org/latest/develop/west/workspaces.html#west-t2
-[board_porting]: https://docs.zephyrproject.org/latest/guides/porting/board_porting.html
-[bindings]: https://docs.zephyrproject.org/latest/guides/dts/bindings.html
-[drivers]: https://docs.zephyrproject.org/latest/reference/drivers/index.html
-[sdk-nrf]: https://github.com/nrfconnect/sdk-nrf
-[west_ext]: https://docs.zephyrproject.org/latest/develop/west/extensions.html
-[runner_ext]: https://docs.zephyrproject.org/latest/develop/modules.html#external-runners
+You will first need to generate keys and then flash each board with crypto_flasher.
+Only afterwards it will be possible to flash either advertiser or scanner binaries.
 
-## Getting started
+> Side note: if you happen to need a mini rack for a bunch of nRF54l15-dks, [here it is](https://github.com/avalanche-pwn/nrf54l15dk-rack).
 
-Before getting started, make sure you have a proper nRF Connect SDK development environment.
-Follow the official
-[Installation guide](https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/nrf/installation/install_ncs.html).
+## Recognition
+This was made as a part af my bachelor thesis under supervision of PhD Marek
+Bawiec and DSc, PhD, Eng, Maciej Nikodem from Wrocław University of Science and
+Technology.
 
-### Initialization
+## Fetching the code
+For simplicity for both building and flashing it is recommended to use dev env provided
+[here](https://github.com/avalanche-pwn/nrf54l15-dk-devenv). Please first follow installation
+step there.
 
-The first step is to initialize the workspace folder (``my-workspace``) where
-the ``ncs-example-application`` and all nRF Connect SDK modules will be cloned. Run the following
-command:
+It should also be possible to build in flash it without the mentioned dev env,
+to do that one would need to install [nRF Connect SDK version 3.1.1](https://docs.nordicsemi.com/bundle/ncs-3.1.1/page/nrf/installation.html).
+After installation it should be possible to follow the commands below however this was not tested.
+Also note that the commands below assume that the $BOARD env variable is set to a proper target
+which is nrf54l15dk/nrf54l15/cpuapp/ns (note the ns part which is important for TFM compatibility).
+The devenv mentioned above sets it up accordingly.
 
-```shell
-# initialize my-workspace for the ncs-example-application (main branch)
-west init -m https://github.com/nrfconnect/ncs-example-application --mr main my-workspace
-# update nRF Connect SDK modules
-cd my-workspace
+If you are using the dev environment enter it using:
+```
+./build_env.sh --docker nrf --enable-ns
+```
+(This specifies to use Nordic based docker environment and to use the non secure target with TFM enabled).
+
+Afterwards initialise the project with:
+```
+west init -m https://github.com/avalanche-pwn/pawr-experiments-combined.git pawr-experiments-combined
+```
+This will create pawr-experiments-combined directory. Afterwards it is necessary to install ncs and all 
+the dependencis to do that cd into pawr-experiments-combined directory and run:
+```
 west update
 ```
 
-### Building and running
-
-To build the application, run the following command:
-
-```shell
-cd example-application
-west build -b $BOARD app
+## Key management
+The project contains a west command extension allowing for key generation and
+management for details run:
+```
+west keymgr --help
 ```
 
-where `$BOARD` is the target board.
+It is important that before flashing a particular scanner it's key is already
+generated. Before flashing an advertiser all the keys need to be generated (Since
+advertiser needs to hold the keys of all scanners).
 
-You can use the `custom_plank` board found in this repository. Note that you can use
-Zephyr and nRF Connect SDK sample boards if an appropriate overlay is provided (see `app/boards`).
+All of the devices in this project are assigned an id which is a 2 byte
+unsigned integer. The value 0 is reserved for advertiser, other devices
+have id's ranging from 1 upwards. The `west keymgr` command also handles
+assignment of the Nordic device ids to the system ones.
 
-A sample debug configuration is also provided. To apply it, run the following
-command:
+To generate a key for a device enter the pawr-expriments-combined directory created during *Fetching the code* fase.
+Run:
+```
+west keymgr --generate --dev-i INTERNAL_DEV_ID --manufacturer-id MANUFACTURER_DEV_ID
+# For example the below will generate a key for advertiser with manufacturer id 1057707291.
+west keymgr --generate --dev-i 0 --manufacturer-id 1057707291
+```
+After generating the first key a file keys.json should get created and look something like this:
+```
+{
+  "0": {
+    "manufacturer_id": "1057707291",
+    "key": "d029beaa91a0e945a8c376b23d5c56206da10ddf20cf599468d399a3ff71ba5d"
+  }
+}
+```
+> Note obviously if you want this to remain secure don't post your keys.json online.
 
-```shell
-west build -b $BOARD app -- -DEXTRA_CONF_FILE=debug.conf
+After you generated all the keys you may need it's time to flash crypto_flasher binary
+which will use PSA to safely save the keys onto the device.
+
+First you need to build the crypto flasher. Enter the
+pawr-experiments-combined/pawr-experiments-combined.git/crypto_flasher
+directory.
+
+Run:
+```
+west build -- -DCONFIG_FLASHED_DEVICE=DEVICE_ID
+# for example
+west build -- -DCONFIG_FLASHED_DEVICE=1
+```
+After building it is necessary to flash the device.
+With many devices connected to the computer it is quite easy to make mistakes when chosing which device to flash.
+To make it easier the keymgr provides an interface to fetch the manufacturer id from the internal device id.
+To do that you can:
+```
+west keymgr --dev-id 1
+```
+Hence the easiest way to flash a device with internal id 1 would be:
+```
+west flash -i $(west keymgr --dev-i 1)
 ```
 
-Once you have built the application, run the following command to flash it:
+## Building and flashing
+### Building and flashing advertiser
 
-```shell
-west flash
+> Remember it's necessary to first at least once flash the device with crypto_flasher
+> in order to flash its cryptographic key onto the board. Additionaly before you
+> flash the advertiser all the keys you ar going to use need to be generated.
+
+To build the advertiser code you need to enter the advertiser directory inside
+of pawr-experiments-combined.git.
+Afterwards do
+```
+west build
+```
+and then (also from the same directory) you can flash the advertiser using:
+```
+west flash -i $(west keymgr --dev-i 0)
+```
+> Remember advertiser always needs to have id 0.
+
+### Building and flashing a scanner
+
+> Remember it's necessary to first at least once flash the device with crypto_flasher
+> in order to flash its cryptographic key onto the board.
+
+To build the scanner code you need to enter the scanner directory inside
+of pawr-experiments-combined.git.
+
+Each scanner needs to have it's internal id configured, so first run:
+```
+west build -- -DCONFIG_SCANNER_ID=DEV_ID
+# for example
+west build -- -DCONFIG_SCANNER_ID=1
+```
+To flash the device use:
+```
+west flash -i $(west keymgr --dev-i 1)
 ```
 
-### Testing
+# Other notes
 
-To execute Twister integration tests, run the following command:
+If you wish to reset advertiser during the operation please make sure
+to use Button 0 instead of reset. Once the reset button is used
+the advertiser will lose count of it's counter used for cryptographic
+verification and afterwards the scanners won't be able to reauthenticate.
 
-```shell
-west twister -T tests --integration
-```
-
-### Documentation
-
-A minimal documentation setup is provided for Doxygen and Sphinx. To build the
-documentation first change to the ``doc`` folder:
-
-```shell
-cd doc
-```
-
-Before continuing, check if you have Doxygen installed. It is recommended to
-use the same Doxygen version used in [CI](.github/workflows/docs.yml). To
-install Sphinx, make sure you have a Python installation in place and run:
-
-```shell
-pip install -r requirements.txt
-```
-
-API documentation (Doxygen) can be built using the following command:
-
-```shell
-doxygen
-```
-
-The output will be stored in the ``_build_doxygen`` folder. Similarly, the
-Sphinx documentation (HTML) can be built using the following command:
-
-```shell
-make html
-```
-
-The output will be stored in the ``_build_sphinx`` folder. You may check for
-other output formats other than HTML by running ``make help``.
+If you accidentally use the reset button you will need to reset all the
+scanners as well.
